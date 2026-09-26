@@ -1,0 +1,15 @@
+{
+  "name": "bot-discord-template",
+  "version": "1.0.0",
+  "description": "Bot para criação automática de templates de servidores Discord",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": "20.x"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1"
+  }
+}
