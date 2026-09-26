@@ -1,0 +1,160 @@
+{
+  "server": {
+    "name": "Meu Servidor"
+  },
+  "roles": [
+    {
+      "name": "Dono",
+      "color": "#FF0000",
+      "hoist": true,
+      "mentionable": false,
+      "permissions": [
+        "Administrator"
+      ],
+      "position": 10
+    },
+    {
+      "name": "Administrador",
+      "color": "#FF8C00",
+      "hoist": true,
+      "mentionable": false,
+      "permissions": [
+        "ManageGuild",
+        "ManageChannels",
+        "ManageRoles",
+        "ManageMessages",
+        "KickMembers",
+        "BanMembers",
+        "ModerateMembers"
+      ],
+      "position": 9
+    },
+    {
+      "name": "Moderador",
+      "color": "#00AAFF",
+      "hoist": true,
+      "mentionable": false,
+      "permissions": [
+        "ManageMessages",
+        "ModerateMembers",
+        "KickMembers"
+      ],
+      "position": 8
+    },
+    {
+      "name": "Membro",
+      "color": "#FFFFFF",
+      "hoist": false,
+      "mentionable": false,
+      "permissions": [
+        "ViewChannel",
+        "SendMessages",
+        "ReadMessageHistory",
+        "AddReactions"
+      ],
+      "position": 1
+    }
+  ],
+  "categories": [
+    {
+      "name": "INFORMAÇÕES",
+      "position": 1,
+      "permissionOverwrites": []
+    },
+    {
+      "name": "COMUNIDADE",
+      "position": 2,
+      "permissionOverwrites": []
+    },
+    {
+      "name": "STAFF",
+      "position": 3,
+      "permissionOverwrites": [
+        {
+          "role": "@everyone",
+          "deny": [
+            "ViewChannel"
+          ],
+          "allow": []
+        },
+        {
+          "role": "Dono",
+          "deny": [],
+          "allow": [
+            "ViewChannel"
+          ]
+        },
+        {
+          "role": "Administrador",
+          "deny": [],
+          "allow": [
+            "ViewChannel"
+          ]
+        },
+        {
+          "role": "Moderador",
+          "deny": [],
+          "allow": [
+            "ViewChannel"
+          ]
+        }
+      ]
+    }
+  ],
+  "channels": [
+    {
+      "name": "boas-vindas",
+      "type": "text",
+      "category": "INFORMAÇÕES",
+      "position": 1,
+      "topic": "Boas-vindas ao servidor",
+      "nsfw": false,
+      "permissionOverwrites": []
+    },
+    {
+      "name": "regras",
+      "type": "text",
+      "category": "INFORMAÇÕES",
+      "position": 2,
+      "topic": "Regras do servidor",
+      "nsfw": false,
+      "permissionOverwrites": [
+        {
+          "role": "@everyone",
+          "deny": [
+            "SendMessages"
+          ],
+          "allow": [
+            "ViewChannel",
+            "ReadMessageHistory"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "chat-geral",
+      "type": "text",
+      "category": "COMUNIDADE",
+      "position": 1,
+      "topic": "Converse com a comunidade",
+      "nsfw": false,
+      "permissionOverwrites": []
+    },
+    {
+      "name": "chat-staff",
+      "type": "text",
+      "category": "STAFF",
+      "position": 1,
+      "topic": "Chat privado da equipe",
+      "nsfw": false,
+      "permissionOverwrites": []
+    },
+    {
+      "name": "Sala de Voz",
+      "type": "voice",
+      "category": "COMUNIDADE",
+      "position": 2,
+      "permissionOverwrites": []
+    }
+  ]
+}
