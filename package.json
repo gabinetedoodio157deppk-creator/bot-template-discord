@@ -1,6 +1,6 @@
-
+{
   "name": "bot-discord-template",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Bot para criação automática de templates de servidores Discord",
   "main": "index.js",
   "scripts": {
@@ -12,4 +12,4 @@
   "dependencies": {
     "discord.js": "^14.14.1"
   }
-
+}
