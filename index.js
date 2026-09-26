@@ -3,32 +3,33 @@ const {
   GatewayIntentBits,
   PermissionFlagsBits,
   ChannelType,
+  SlashCommandBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  AttachmentBuilder,
   Events
 } = require("discord.js");
 
-const fs = require("fs");
+/* =========================================================
+   CLIENT
+========================================================= */
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.GuildMessages
   ]
 });
 
 const TOKEN = process.env.TOKEN;
 
 if (!TOKEN) {
-  console.error("ERRO: A variável TOKEN não foi configurada.");
+  console.error("❌ A variável TOKEN não foi configurada no Render.");
   process.exit(1);
 }
 
 /* =========================================================
-   CONFIGURAÇÕES
+   TIPOS DE CANAL
 ========================================================= */
 
 const SUPPORTED_CHANNEL_TYPES = {
@@ -36,30 +37,50 @@ const SUPPORTED_CHANNEL_TYPES = {
   voice: ChannelType.GuildVoice,
   announcement: ChannelType.GuildAnnouncement,
   forum: ChannelType.GuildForum,
-  stage: ChannelType.GuildStageVoice,
-  media: ChannelType.GuildMedia
+  stage: ChannelType.GuildStageVoice
 };
 
-const VALID_PERMISSION_NAMES = new Set(
-  Object.keys(PermissionFlagsBits)
-);
+// Só adiciona media se a versão instalada do discord.js suportar.
+if (ChannelType.GuildMedia !== undefined) {
+  SUPPORTED_CHANNEL_TYPES.media = ChannelType.GuildMedia;
+}
 
 /* =========================================================
-   UTILITÁRIOS
+   COMANDO /PAINEL
+========================================================= */
+
+const painelCommand = new SlashCommandBuilder()
+  .setName("painel")
+  .setDescription("Abre o painel de gerenciamento de templates")
+  .setDefaultMemberPermissions(
+    PermissionFlagsBits.Administrator
+  )
+  .toJSON();
+
+/* =========================================================
+   FUNÇÕES BÁSICAS
 ========================================================= */
 
 function isAdmin(member) {
-  return member.permissions.has(PermissionFlagsBits.Administrator);
+  return Boolean(
+    member &&
+    member.permissions &&
+    member.permissions.has(
+      PermissionFlagsBits.Administrator
+    )
+  );
 }
 
 function normalizePermission(permission) {
   if (!permission) return null;
 
-  const found = Object.keys(PermissionFlagsBits).find(
-    key => key.toLowerCase() === String(permission).toLowerCase()
-  );
+  const wanted = String(permission).toLowerCase();
 
-  return found || null;
+  return (
+    Object.keys(PermissionFlagsBits).find(
+      key => key.toLowerCase() === wanted
+    ) || null
+  );
 }
 
 function permissionsToObject(permissions = []) {
@@ -76,7 +97,7 @@ function permissionsToObject(permissions = []) {
   return result;
 }
 
-function overwriteToObject(overwrite) {
+function overwriteToObject(overwrite = {}) {
   const result = {};
 
   for (const permission of overwrite.allow || []) {
@@ -99,418 +120,20 @@ function overwriteToObject(overwrite) {
 }
 
 function safeColor(color) {
-  if (!color) return null;
-
-  if (typeof color !== "string") {
-    return null;
+  if (
+    typeof color === "string" &&
+    /^#[0-9A-Fa-f]{6}$/.test(color)
+  ) {
+    return color;
   }
 
-  if (!/^#[0-9A-Fa-f]{6}$/.test(color)) {
-    return null;
-  }
-
-  return color;
+  return null;
 }
 
-function sanitizeName(name) {
-  return String(name)
+function safeName(name) {
+  return String(name || "")
     .trim()
-    .replace(/^#/, "")
     .slice(0, 100);
-}
-
-/* =========================================================
-   VALIDAÇÃO DO TEMPLATE
-========================================================= */
-
-function validateTemplate(template) {
-  const errors = [];
-
-  if (!template || typeof template !== "object") {
-    errors.push("O JSON precisa ser um objeto.");
-    return errors;
-  }
-
-  if (!Array.isArray(template.roles)) {
-    errors.push("O campo 'roles' precisa ser uma lista.");
-  }
-
-  if (!Array.isArray(template.categories)) {
-    errors.push("O campo 'categories' precisa ser uma lista.");
-  }
-
-  if (!Array.isArray(template.channels)) {
-    errors.push("O campo 'channels' precisa ser uma lista.");
-  }
-
-  if (Array.isArray(template.roles)) {
-    for (const role of template.roles) {
-      if (!role.name) {
-        errors.push("Existe um cargo sem nome.");
-      }
-
-      if (role.permissions && !Array.isArray(role.permissions)) {
-        errors.push(
-          `As permissões do cargo "${role.name}" precisam ser uma lista.`
-        );
-      }
-
-      for (const permission of role.permissions || []) {
-        if (!normalizePermission(permission)) {
-          errors.push(
-            `Permissão inválida no cargo "${role.name}": ${permission}`
-          );
-        }
-      }
-    }
-  }
-
-  if (Array.isArray(template.categories)) {
-    for (const category of template.categories) {
-      if (!category.name) {
-        errors.push("Existe uma categoria sem nome.");
-      }
-    }
-  }
-
-  if (Array.isArray(template.channels)) {
-    for (const channel of template.channels) {
-      if (!channel.name) {
-        errors.push("Existe um canal sem nome.");
-      }
-
-      if (!channel.type) {
-        errors.push(
-          `O canal "${channel.name || "sem nome"}" não possui tipo.`
-        );
-      }
-
-      if (channel.type && !SUPPORTED_CHANNEL_TYPES[channel.type]) {
-        errors.push(
-          `Tipo de canal inválido: ${channel.type}`
-        );
-      }
-    }
-  }
-
-  return errors;
-}
-
-/* =========================================================
-   CRIAÇÃO DOS CARGOS
-========================================================= */
-
-async function createRoles(guild, template) {
-  const roleMap = new Map();
-
-  const roles = [...template.roles].sort(
-    (a, b) => (a.position || 0) - (b.position || 0)
-  );
-
-  for (const roleData of roles) {
-    if (!roleData.name) continue;
-
-    const existing = guild.roles.cache.find(
-      role => role.name === roleData.name
-    );
-
-    if (existing) {
-      roleMap.set(roleData.name, existing);
-      continue;
-    }
-
-    try {
-      const role = await guild.roles.create({
-        name: sanitizeName(roleData.name),
-        color: safeColor(roleData.color) || undefined,
-        hoist: Boolean(roleData.hoist),
-        mentionable: Boolean(roleData.mentionable),
-        permissions: permissionsToObject(roleData.permissions || []),
-        reason: "Criação de template pelo bot"
-      });
-
-      roleMap.set(roleData.name, role);
-
-    } catch (error) {
-      console.error(
-        `Erro ao criar cargo ${roleData.name}:`,
-        error.message
-      );
-    }
-  }
-
-  /*
-   * Ajuste de hierarquia.
-   *
-   * O Discord não permite que o bot coloque um cargo
-   * acima do maior cargo que pertence ao próprio bot.
-   */
-
-  for (const roleData of roles) {
-    const role = roleMap.get(roleData.name);
-
-    if (!role) continue;
-
-    if (typeof roleData.position !== "number") continue;
-
-    try {
-      await role.setPosition(roleData.position);
-    } catch (error) {
-      console.log(
-        `Não foi possível posicionar o cargo ${roleData.name}: ${error.message}`
-      );
-    }
-  }
-
-  return roleMap;
-}
-
-/* =========================================================
-   PERMISSÕES
-========================================================= */
-
-function resolveOverwriteRole(guild, roleMap, roleName) {
-  if (!roleName) return null;
-
-  if (roleName === "@everyone") {
-    return guild.roles.everyone;
-  }
-
-  return roleMap.get(roleName) || null;
-}
-
-async function applyPermissionOverwrites(
-  channel,
-  overwrites,
-  guild,
-  roleMap
-) {
-  if (!Array.isArray(overwrites)) return;
-
-  for (const overwrite of overwrites) {
-    const role = resolveOverwriteRole(
-      guild,
-      roleMap,
-      overwrite.role
-    );
-
-    if (!role) {
-      console.log(
-        `Cargo não encontrado para permissionOverwrite: ${overwrite.role}`
-      );
-      continue;
-    }
-
-    const permissions = overwriteToObject(overwrite);
-
-    try {
-      await channel.permissionOverwrites.edit(
-        role,
-        permissions
-      );
-    } catch (error) {
-      console.error(
-        `Erro nas permissões do canal ${channel.name}:`,
-        error.message
-      );
-    }
-  }
-}
-
-/* =========================================================
-   CRIAÇÃO DAS CATEGORIAS
-========================================================= */
-
-async function createCategories(guild, template, roleMap) {
-  const categoryMap = new Map();
-
-  const categories = [...template.categories].sort(
-    (a, b) => (a.position || 0) - (b.position || 0)
-  );
-
-  for (const categoryData of categories) {
-    const existing = guild.channels.cache.find(
-      channel =>
-        channel.type === ChannelType.GuildCategory &&
-        channel.name === categoryData.name
-    );
-
-    let category = existing;
-
-    if (!category) {
-      try {
-        category = await guild.channels.create({
-          name: sanitizeName(categoryData.name),
-          type: ChannelType.GuildCategory,
-          reason: "Criação de template pelo bot"
-        });
-      } catch (error) {
-        console.error(
-          `Erro ao criar categoria ${categoryData.name}:`,
-          error.message
-        );
-
-        continue;
-      }
-    }
-
-    categoryMap.set(categoryData.name, category);
-
-    await applyPermissionOverwrites(
-      category,
-      categoryData.permissionOverwrites,
-      guild,
-      roleMap
-    );
-  }
-
-  return categoryMap;
-}
-
-/* =========================================================
-   CRIAÇÃO DOS CANAIS
-========================================================= */
-
-async function createChannels(
-  guild,
-  template,
-  categoryMap,
-  roleMap
-) {
-  const channels = [...template.channels].sort(
-    (a, b) => (a.position || 0) - (b.position || 0)
-  );
-
-  for (const channelData of channels) {
-    const type =
-      SUPPORTED_CHANNEL_TYPES[channelData.type];
-
-    if (!type) continue;
-
-    const category =
-      categoryMap.get(channelData.category);
-
-    const existing = guild.channels.cache.find(
-      channel =>
-        channel.name === channelData.name &&
-        channel.type === type
-    );
-
-    let channel = existing;
-
-    if (!channel) {
-      try {
-        const options = {
-          name: sanitizeName(channelData.name),
-          type,
-          reason: "Criação de template pelo bot"
-        };
-
-        if (category) {
-          options.parent = category.id;
-        }
-
-        if (
-          channelData.type === "text" ||
-          channelData.type === "announcement"
-        ) {
-          if (channelData.topic) {
-            options.topic =
-              String(channelData.topic).slice(0, 1024);
-          }
-
-          options.nsfw =
-            Boolean(channelData.nsfw);
-        }
-
-        channel =
-          await guild.channels.create(options);
-
-      } catch (error) {
-        console.error(
-          `Erro ao criar canal ${channelData.name}:`,
-          error.message
-        );
-
-        continue;
-      }
-    }
-
-    await applyPermissionOverwrites(
-      channel,
-      channelData.permissionOverwrites,
-      guild,
-      roleMap
-    );
-
-    if (
-      typeof channelData.position === "number"
-    ) {
-      try {
-        await channel.setPosition(
-          channelData.position
-        );
-      } catch (error) {
-        console.log(
-          `Não foi possível posicionar ${channel.name}: ${error.message}`
-        );
-      }
-    }
-  }
-}
-
-/* =========================================================
-   APLICAÇÃO COMPLETA
-========================================================= */
-
-async function applyTemplate(guild, template) {
-  const errors = validateTemplate(template);
-
-  if (errors.length > 0) {
-    throw new Error(
-      "JSON inválido:\n" +
-      errors.join("\n")
-    );
-  }
-
-  const roleMap =
-    await createRoles(guild, template);
-
-  const categoryMap =
-    await createCategories(
-      guild,
-      template,
-      roleMap
-    );
-
-  await createChannels(
-    guild,
-    template,
-    categoryMap,
-    roleMap
-  );
-
-  return {
-    roles: roleMap.size,
-    categories: categoryMap.size,
-    channels: template.channels.length
-  };
-}
-
-/* =========================================================
-   PROMPT DA IA
-========================================================= */
-
-function getPromptAttachment() {
-  const path = "./PROMPT_IA_TEMPLATE.txt";
-
-  if (!fs.existsSync(path)) {
-    return null;
-  }
-
-  return new AttachmentBuilder(path, {
-    name: "PROMPT_IA_TEMPLATE.txt"
-  });
 }
 
 /* =========================================================
@@ -526,35 +149,35 @@ function createPanel() {
       .setStyle(ButtonStyle.Success),
 
     new ButtonBuilder()
-      .setCustomId("tutorial")
-      .setLabel("Tutorial")
-      .setEmoji("📖")
+      .setCustomId("prompt_ia")
+      .setLabel("Prompt IA")
+      .setEmoji("✨")
       .setStyle(ButtonStyle.Primary),
 
     new ButtonBuilder()
-      .setCustomId("prompt_ia")
-      .setLabel("Prompt para IA")
-      .setEmoji("✨")
+      .setCustomId("modelo_json")
+      .setLabel("Modelo")
+      .setEmoji("📋")
       .setStyle(ButtonStyle.Secondary)
   );
 
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId("modelo_json")
-      .setLabel("Modelo JSON")
-      .setEmoji("📋")
-      .setStyle(ButtonStyle.Secondary),
-
-    new ButtonBuilder()
-      .setCustomId("administrar")
-      .setLabel("Administrar")
-      .setEmoji("⚙️")
+      .setCustomId("tutorial")
+      .setLabel("Tutorial")
+      .setEmoji("📖")
       .setStyle(ButtonStyle.Secondary),
 
     new ButtonBuilder()
       .setCustomId("status")
       .setLabel("Status")
       .setEmoji("📊")
+      .setStyle(ButtonStyle.Secondary),
+
+    new ButtonBuilder()
+      .setCustomId("administrar")
+      .setLabel("Administrar")
+      .setEmoji("⚙️")
       .setStyle(ButtonStyle.Secondary)
   );
 
@@ -562,151 +185,746 @@ function createPanel() {
 }
 
 /* =========================================================
+   VALIDAÇÃO DO JSON
+========================================================= */
+
+function validateTemplate(template) {
+  const errors = [];
+
+  if (!template || typeof template !== "object") {
+    return ["O arquivo precisa conter um objeto JSON válido."];
+  }
+
+  if (
+    template.roles !== undefined &&
+    !Array.isArray(template.roles)
+  ) {
+    errors.push("'roles' precisa ser uma lista.");
+  }
+
+  if (
+    template.categories !== undefined &&
+    !Array.isArray(template.categories)
+  ) {
+    errors.push("'categories' precisa ser uma lista.");
+  }
+
+  if (
+    template.channels !== undefined &&
+    !Array.isArray(template.channels)
+  ) {
+    errors.push("'channels' precisa ser uma lista.");
+  }
+
+  for (const role of template.roles || []) {
+    if (!role.name) {
+      errors.push("Existe um cargo sem nome.");
+    }
+
+    for (const permission of role.permissions || []) {
+      if (!normalizePermission(permission)) {
+        errors.push(
+          `Permissão inválida no cargo "${role.name}": ${permission}`
+        );
+      }
+    }
+  }
+
+  for (const category of template.categories || []) {
+    if (!category.name) {
+      errors.push("Existe uma categoria sem nome.");
+    }
+  }
+
+  for (const channel of template.channels || []) {
+    if (!channel.name) {
+      errors.push("Existe um canal sem nome.");
+    }
+
+    if (!channel.type) {
+      errors.push(
+        `O canal "${channel.name || "sem nome"}" não possui tipo.`
+      );
+    }
+
+    if (
+      channel.type &&
+      !SUPPORTED_CHANNEL_TYPES[channel.type]
+    ) {
+      errors.push(
+        `Tipo de canal inválido: ${channel.type}`
+      );
+    }
+  }
+
+  return errors;
+}
+
+/* =========================================================
+   CARGOS
+========================================================= */
+
+async function createRoles(guild, template) {
+  const roleMap = new Map();
+
+  const roles = [...(template.roles || [])].sort(
+    (a, b) => (a.position || 0) - (b.position || 0)
+  );
+
+  for (const data of roles) {
+    const name = safeName(data.name);
+
+    if (!name) continue;
+
+    let role = guild.roles.cache.find(
+      r => r.name === name
+    );
+
+    if (!role) {
+      try {
+        role = await guild.roles.create({
+          name,
+          color: safeColor(data.color) || undefined,
+          hoist: Boolean(data.hoist),
+          mentionable: Boolean(data.mentionable),
+          permissions: permissionsToObject(
+            data.permissions || []
+          ),
+          reason: "Template criado pelo bot"
+        });
+      } catch (error) {
+        console.error(
+          `Erro ao criar cargo "${name}":`,
+          error.message
+        );
+
+        continue;
+      }
+    } else {
+      // Atualiza as propriedades caso o cargo já exista.
+      try {
+        await role.edit({
+          color: safeColor(data.color) || role.color,
+          hoist: Boolean(data.hoist),
+          mentionable: Boolean(data.mentionable),
+          permissions: permissionsToObject(
+            data.permissions || []
+          ),
+          reason: "Atualização pelo template"
+        });
+      } catch (error) {
+        console.log(
+          `Não foi possível atualizar "${name}": ${error.message}`
+        );
+      }
+    }
+
+    roleMap.set(name, role);
+  }
+
+  /*
+   * Discord só permite movimentar cargos abaixo
+   * do maior cargo do bot.
+   */
+
+  for (const data of roles) {
+    const role = roleMap.get(safeName(data.name));
+
+    if (!role) continue;
+
+    if (typeof data.position !== "number") {
+      continue;
+    }
+
+    try {
+      await role.setPosition(data.position);
+    } catch (error) {
+      console.log(
+        `Não foi possível posicionar "${role.name}": ${error.message}`
+      );
+    }
+  }
+
+  return roleMap;
+}
+
+/* =========================================================
+   RESOLVER CARGO
+========================================================= */
+
+function resolveRole(guild, roleMap, roleName) {
+  if (!roleName) return null;
+
+  if (roleName === "@everyone") {
+    return guild.roles.everyone;
+  }
+
+  return roleMap.get(roleName) || null;
+}
+
+/* =========================================================
+   PERMISSÕES DE CANAL
+========================================================= */
+
+async function applyPermissionOverwrites(
+  channel,
+  overwrites,
+  guild,
+  roleMap
+) {
+  if (!Array.isArray(overwrites)) {
+    return;
+  }
+
+  for (const overwrite of overwrites) {
+    const role = resolveRole(
+      guild,
+      roleMap,
+      overwrite.role
+    );
+
+    if (!role) {
+      console.log(
+        `⚠️ Cargo "${overwrite.role}" não encontrado para o canal "${channel.name}".`
+      );
+
+      continue;
+    }
+
+    const permissions =
+      overwriteToObject(overwrite);
+
+    try {
+      await channel.permissionOverwrites.edit(
+        role,
+        permissions
+      );
+    } catch (error) {
+      console.error(
+        `Erro nas permissões de "${channel.name}":`,
+        error.message
+      );
+    }
+  }
+}
+
+/* =========================================================
+   CATEGORIAS
+========================================================= */
+
+async function createCategories(
+  guild,
+  template,
+  roleMap
+) {
+  const categoryMap = new Map();
+
+  const categories = [
+    ...(template.categories || [])
+  ].sort(
+    (a, b) =>
+      (a.position || 0) -
+      (b.position || 0)
+  );
+
+  for (const data of categories) {
+    const name = safeName(data.name);
+
+    if (!name) continue;
+
+    let category = guild.channels.cache.find(
+      channel =>
+        channel.type === ChannelType.GuildCategory &&
+        channel.name === name
+    );
+
+    if (!category) {
+      try {
+        category = await guild.channels.create({
+          name,
+          type: ChannelType.GuildCategory,
+          reason: "Template criado pelo bot"
+        });
+      } catch (error) {
+        console.error(
+          `Erro ao criar categoria "${name}":`,
+          error.message
+        );
+
+        continue;
+      }
+    }
+
+    categoryMap.set(name, category);
+
+    await applyPermissionOverwrites(
+      category,
+      data.permissionOverwrites,
+      guild,
+      roleMap
+    );
+  }
+
+  return categoryMap;
+}
+
+/* =========================================================
+   CANAIS
+========================================================= */
+
+async function createChannels(
+  guild,
+  template,
+  categoryMap,
+  roleMap
+) {
+  const channels = [
+    ...(template.channels || [])
+  ].sort(
+    (a, b) =>
+      (a.position || 0) -
+      (b.position || 0)
+  );
+
+  for (const data of channels) {
+    const name = safeName(data.name);
+
+    if (!name) continue;
+
+    const type =
+      SUPPORTED_CHANNEL_TYPES[data.type];
+
+    if (!type) continue;
+
+    const category =
+      categoryMap.get(
+        safeName(data.category)
+      );
+
+    let channel = guild.channels.cache.find(
+      c =>
+        c.name === name &&
+        c.type === type
+    );
+
+    if (!channel) {
+      try {
+        const options = {
+          name,
+          type,
+          reason: "Template criado pelo bot"
+        };
+
+        if (category) {
+          options.parent = category.id;
+        }
+
+        if (
+          data.type === "text" ||
+          data.type === "announcement"
+        ) {
+          if (data.topic) {
+            options.topic = String(
+              data.topic
+            ).slice(0, 1024);
+          }
+
+          options.nsfw =
+            Boolean(data.nsfw);
+        }
+
+        channel =
+          await guild.channels.create(options);
+      } catch (error) {
+        console.error(
+          `Erro ao criar canal "${name}":`,
+          error.message
+        );
+
+        continue;
+      }
+    } else if (category) {
+      // Garante que o canal fique na categoria correta.
+      try {
+        await channel.setParent(
+          category.id,
+          {
+            lockPermissions: false
+          }
+        );
+      } catch (error) {
+        console.log(
+          `Não foi possível mover "${name}": ${error.message}`
+        );
+      }
+    }
+
+    await applyPermissionOverwrites(
+      channel,
+      data.permissionOverwrites,
+      guild,
+      roleMap
+    );
+
+    if (typeof data.position === "number") {
+      try {
+        await channel.setPosition(
+          data.position
+        );
+      } catch (error) {
+        console.log(
+          `Não foi possível posicionar "${name}": ${error.message}`
+        );
+      }
+    }
+  }
+}
+
+/* =========================================================
+   APLICAR TEMPLATE
+========================================================= */
+
+async function applyTemplate(
+  guild,
+  template
+) {
+  const errors =
+    validateTemplate(template);
+
+  if (errors.length > 0) {
+    throw new Error(
+      errors.join("\n")
+    );
+  }
+
+  const roleMap =
+    await createRoles(
+      guild,
+      template
+    );
+
+  const categoryMap =
+    await createCategories(
+      guild,
+      template,
+      roleMap
+    );
+
+  await createChannels(
+    guild,
+    template,
+    categoryMap,
+    roleMap
+  );
+}
+
+/* =========================================================
+   STATUS REAL DO SERVIDOR
+========================================================= */
+
+function getServerStats(guild) {
+  const totalChannels =
+    guild.channels.cache.filter(
+      channel =>
+        channel.type !==
+        ChannelType.GuildCategory
+    ).size;
+
+  const totalCategories =
+    guild.channels.cache.filter(
+      channel =>
+        channel.type ===
+        ChannelType.GuildCategory
+    ).size;
+
+  // @everyone não é contado como cargo personalizado.
+  const totalRoles =
+    guild.roles.cache.filter(
+      role => role.id !== guild.id
+    ).size;
+
+  const totalMembers =
+    guild.memberCount;
+
+  return {
+    channels: totalChannels,
+    categories: totalCategories,
+    roles: totalRoles,
+    members: totalMembers
+  };
+}
+
+/* =========================================================
+   PROMPT PEQUENO
+========================================================= */
+
+const PROMPT_IA = `Crie um JSON de configuração para um servidor Discord.
+
+O JSON deve conter:
+- roles
+- categories
+- channels
+
+Para cargos, use:
+name, color, permissions, position.
+
+Para canais, use:
+name, type, category, position e permissionOverwrites.
+
+Tipos:
+text, voice, announcement, forum, stage.
+
+Para permissões:
+Administrator, ManageGuild, ManageChannels, ManageRoles,
+ManageMessages, KickMembers, BanMembers, ModerateMembers,
+ViewChannel, SendMessages, ReadMessageHistory, Connect, Speak.
+
+Responda SOMENTE com JSON válido, sem explicações e sem markdown.
+
+Exemplo de cargo administrador:
+{
+  "name": "Admin",
+  "permissions": ["Administrator"]
+}`;
+
+/* =========================================================
+   MODELO JSON PEQUENO
+========================================================= */
+
+const MODELO_JSON = {
+  server: {
+    name: "Meu Servidor"
+  },
+  roles: [
+    {
+      name: "Admin",
+      color: "#5865F2",
+      permissions: [
+        "Administrator"
+      ],
+      position: 10
+    },
+    {
+      name: "Membro",
+      color: "#FFFFFF",
+      permissions: [
+        "ViewChannel",
+        "SendMessages"
+      ],
+      position: 1
+    }
+  ],
+  categories: [
+    {
+      name: "COMUNIDADE",
+      position: 1
+    }
+  ],
+  channels: [
+    {
+      name: "chat-geral",
+      type: "text",
+      category: "COMUNIDADE",
+      position: 1
+    }
+  ]
+};
+
+/* =========================================================
    TUTORIAL
 ========================================================= */
 
-async function showTutorial(interaction) {
+async function sendTutorial(
+  interaction
+) {
   await interaction.reply({
     ephemeral: true,
     content:
-      "**📖 Como usar o bot**\n\n" +
-      "**1️⃣ Prompt para IA**\n" +
-      "Clique em `✨ Prompt para IA` e envie o prompt para uma IA.\n\n" +
-      "**2️⃣ Descreva seu servidor**\n" +
-      "Explique como você quer os cargos, categorias, canais e permissões.\n\n" +
-      "**3️⃣ Gere o JSON**\n" +
-      "A IA deve responder somente com JSON válido.\n\n" +
-      "**4️⃣ Gerar Template**\n" +
-      "Clique em `🚀 Gerar Template` e envie o arquivo `.json`.\n\n" +
-      "**5️⃣ O bot cria tudo**\n" +
-      "Cargos, permissões, categorias, canais e restrições serão aplicados.\n\n" +
-      "⚠️ O bot continua sujeito às limitações da API e da hierarquia do Discord."
+      "📖 **Tutorial rápido**\n\n" +
+      "1️⃣ Toque em **Prompt IA**.\n" +
+      "2️⃣ Envie o prompt para uma IA e diga como quer seu servidor.\n" +
+      "3️⃣ Salve a resposta da IA em `.json`.\n" +
+      "4️⃣ Toque em **Gerar Template** e envie o arquivo.\n" +
+      "5️⃣ O bot cria cargos, categorias, canais e permissões.\n\n" +
+      "⚠️ O Discord ainda respeita a hierarquia de cargos."
   });
 }
 
 /* =========================================================
-   RECEBER JSON
+   ESPERAR JSON
 ========================================================= */
 
-async function waitForJson(interaction) {
-  const channel = interaction.channel;
+async function waitForJSON(
+  interaction
+) {
+  const channel =
+    interaction.channel;
 
   if (!channel) {
-    throw new Error("Não foi possível acessar este canal.");
+    throw new Error(
+      "Canal não encontrado."
+    );
   }
 
   await interaction.editReply({
     content:
       "📎 **Envie agora o arquivo `.json` neste canal.**\n\n" +
-      "O arquivo deve conter a configuração do template.\n" +
-      "Você tem **2 minutos** para enviar."
+      "Você tem 2 minutos."
   });
 
   const filter = message => {
-    if (message.author.id !== interaction.user.id) {
+    if (
+      message.author.id !==
+      interaction.user.id
+    ) {
       return false;
     }
 
     return message.attachments.some(
       attachment =>
-        attachment.name.toLowerCase().endsWith(".json")
+        attachment.name &&
+        attachment.name
+          .toLowerCase()
+          .endsWith(".json")
     );
   };
 
-  const collected =
-    await channel.awaitMessages({
-      filter,
-      max: 1,
-      time: 120000,
-      errors: ["time"]
-    });
+  let collected;
 
-  const message = collected.first();
+  try {
+    collected =
+      await channel.awaitMessages({
+        filter,
+        max: 1,
+        time: 120000,
+        errors: ["time"]
+      });
+  } catch {
+    throw new Error(
+      "Tempo esgotado. O arquivo JSON não foi enviado."
+    );
+  }
+
+  const message =
+    collected.first();
 
   if (!message) {
     throw new Error(
-      "Tempo esgotado. Nenhum JSON foi enviado."
+      "Arquivo não encontrado."
     );
   }
 
   const attachment =
     message.attachments.find(
       file =>
-        file.name.toLowerCase().endsWith(".json")
+        file.name &&
+        file.name
+          .toLowerCase()
+          .endsWith(".json")
     );
 
   if (!attachment) {
     throw new Error(
-      "Nenhum arquivo JSON encontrado."
+      "Envie um arquivo terminado em .json."
     );
   }
 
-  const response =
-    await fetch(attachment.url);
+  let response;
+
+  try {
+    response =
+      await fetch(attachment.url);
+  } catch {
+    throw new Error(
+      "Não consegui acessar o arquivo enviado."
+    );
+  }
 
   if (!response.ok) {
     throw new Error(
-      "Não foi possível baixar o arquivo JSON."
+      "Não consegui baixar o arquivo JSON."
     );
   }
 
-  const text =
+  const raw =
     await response.text();
 
   let json;
 
   try {
-    json = JSON.parse(text);
+    json = JSON.parse(raw);
   } catch {
     throw new Error(
-      "O arquivo não contém JSON válido."
+      "Esse arquivo não possui JSON válido."
     );
   }
+
+  /*
+   * Tenta apagar o arquivo enviado para não
+   * deixar lixo no canal.
+   */
+
+  try {
+    await message.delete();
+  } catch {}
 
   return json;
 }
 
 /* =========================================================
-   EVENTOS
+   READY
 ========================================================= */
 
-client.once(Events.ClientReady, async readyClient => {
-  console.log(
-    `Bot online: ${readyClient.user.tag}`
-  );
-
-  try {
-    const guilds = readyClient.guilds.cache;
-
-    for (const guild of guilds.values()) {
-      await guild.commands.set([
-        {
-          name: "painel",
-          description:
-            "Abre o painel de criação de templates"
-        },
-        {
-          name: "gerartemplate",
-          description:
-            "Inicia a criação de um template"
-        }
-      ]);
-    }
-
+client.once(
+  Events.ClientReady,
+  async readyClient => {
     console.log(
-      "Comandos registrados."
+      `✅ Bot online: ${readyClient.user.tag}`
     );
 
-  } catch (error) {
-    console.error(
-      "Erro ao registrar comandos:",
-      error
-    );
+    try {
+      /*
+       * Apaga comandos globais antigos.
+       */
+      await readyClient.application.commands.set(
+        []
+      );
+
+      /*
+       * Em cada servidor, deixa SOMENTE /painel.
+       */
+      for (const guild of readyClient.guilds.cache.values()) {
+        try {
+          await guild.commands.set([
+            painelCommand
+          ]);
+
+          console.log(
+            `✅ /painel registrado em ${guild.name}`
+          );
+        } catch (error) {
+          console.error(
+            `Erro ao registrar comandos em ${guild.name}:`,
+            error.message
+          );
+        }
+      }
+
+      console.log(
+        "✅ Comandos antigos removidos."
+      );
+
+    } catch (error) {
+      console.error(
+        "Erro ao configurar comandos:",
+        error
+      );
+    }
   }
-});
+);
 
 /* =========================================================
-   SLASH COMMANDS
+   INTERAÇÕES
 ========================================================= */
 
 client.on(
@@ -715,39 +933,36 @@ client.on(
 
     try {
 
-      /* ================================
-         COMANDOS
-      ================================= */
+      /* =====================================================
+         SLASH COMMAND
+      ===================================================== */
 
-      if (interaction.isChatInputCommand()) {
+      if (
+        interaction.isChatInputCommand()
+      ) {
 
         if (!interaction.guild) {
           await interaction.reply({
             content:
-              "❌ Este comando só pode ser usado dentro de um servidor.",
+              "❌ Use esse comando dentro de um servidor.",
             ephemeral: true
           });
 
           return;
         }
 
-        if (!isAdmin(interaction.member)) {
+        /*
+         * Segunda camada de segurança.
+         */
+        if (
+          !isAdmin(
+            interaction.member
+          )
+        ) {
           await interaction.reply({
             content:
-              "❌ Apenas administradores podem usar este bot.",
+              "❌ Apenas administradores do servidor podem usar este comando.",
             ephemeral: true
-          });
-
-          return;
-        }
-
-        if (interaction.commandName === "painel") {
-
-          await interaction.reply({
-            content:
-              "## 🤖 Gerenciador de Templates\n\n" +
-              "Use os botões abaixo para criar e administrar templates do servidor.",
-            components: createPanel()
           });
 
           return;
@@ -755,176 +970,194 @@ client.on(
 
         if (
           interaction.commandName ===
-          "gerartemplate"
+          "painel"
         ) {
 
+          /*
+           * IMPORTANTE:
+           * ephemeral = true
+           *
+           * Somente quem usou /painel verá.
+           */
+
           await interaction.reply({
+            ephemeral: true,
             content:
-              "🚀 **Gerar Template**\n\n" +
-              "Envie o arquivo `.json` neste canal.",
-            ephemeral: true
+              "## 🤖 Gerenciador de Templates\n\n" +
+              "Escolha uma opção abaixo:",
+            components:
+              createPanel()
           });
-
-          try {
-
-            const template =
-              await waitForJson(interaction);
-
-            await interaction.editReply({
-              content:
-                "🔍 JSON recebido. Validando..."
-            });
-
-            const errors =
-              validateTemplate(template);
-
-            if (errors.length > 0) {
-              await interaction.editReply({
-                content:
-                  "❌ **JSON inválido:**\n\n" +
-                  errors.map(e => `• ${e}`).join("\n")
-              });
-
-              return;
-            }
-
-            await interaction.editReply({
-              content:
-                "⚙️ JSON válido. Criando estrutura..."
-            });
-
-            const result =
-              await applyTemplate(
-                interaction.guild,
-                template
-              );
-
-            await interaction.editReply({
-              content:
-                "✅ **Template criado com sucesso!**\n\n" +
-                `👤 Cargos processados: **${result.roles}**\n` +
-                `📁 Categorias processadas: **${result.categories}**\n` +
-                `💬 Canais processados: **${result.channels}**`
-            });
-
-          } catch (error) {
-
-            console.error(error);
-
-            await interaction.editReply({
-              content:
-                "❌ **Erro ao gerar o template:**\n\n" +
-                String(error.message || error).slice(
-                  0,
-                  1800
-                )
-            });
-          }
 
           return;
         }
+
+        return;
       }
 
-      /* ================================
+      /* =====================================================
          BOTÕES
-      ================================= */
+      ===================================================== */
 
-      if (interaction.isButton()) {
+      if (
+        interaction.isButton()
+      ) {
 
         if (!interaction.guild) {
           await interaction.reply({
             content:
-              "❌ Este botão só funciona dentro de um servidor.",
+              "❌ Esse botão só funciona dentro de um servidor.",
             ephemeral: true
           });
 
           return;
         }
 
-        if (!isAdmin(interaction.member)) {
+        /*
+         * Todos os botões também exigem administrador.
+         */
+
+        if (
+          !isAdmin(
+            interaction.member
+          )
+        ) {
           await interaction.reply({
             content:
-              "❌ Apenas administradores podem usar o bot.",
+              "❌ Apenas administradores podem usar o painel.",
             ephemeral: true
           });
 
           return;
         }
 
-        /* ================================
+        /* ===================================================
            PROMPT IA
-        ================================= */
+        =================================================== */
 
         if (
           interaction.customId ===
           "prompt_ia"
         ) {
 
-          const attachment =
-            getPromptAttachment();
-
-          if (!attachment) {
-            await interaction.reply({
-              content:
-                "❌ O arquivo `PROMPT_IA_TEMPLATE.txt` não foi encontrado no projeto.",
-              ephemeral: true
-            });
-
-            return;
-          }
-
           await interaction.reply({
+            ephemeral: true,
             content:
-              "✨ **Prompt oficial para IA**\n\n" +
-              "Enviei o prompt completo como arquivo abaixo. Abra, copie e envie para a IA que você quiser.",
-            files: [attachment],
-            ephemeral: true
+              "✨ **PROMPT PARA IA**\n\n" +
+              "Copie este texto e envie para a IA:\n\n" +
+              "```text\n" +
+              PROMPT_IA +
+              "\n```"
           });
 
           return;
         }
 
-        /* ================================
+        /* ===================================================
            MODELO JSON
-        ================================= */
+        =================================================== */
 
         if (
           interaction.customId ===
           "modelo_json"
         ) {
 
-          const path =
-            "./MODELO_TEMPLATE.json";
-
-          if (!fs.existsSync(path)) {
-            await interaction.reply({
-              content:
-                "❌ O arquivo `MODELO_TEMPLATE.json` não foi encontrado.",
-              ephemeral: true
-            });
-
-            return;
-          }
-
-          const attachment =
-            new AttachmentBuilder(path, {
-              name: "MODELO_TEMPLATE.json"
-            });
+          const model =
+            JSON.stringify(
+              MODELO_JSON,
+              null,
+              2
+            );
 
           await interaction.reply({
+            ephemeral: true,
             content:
-              "📋 **Modelo JSON**\n\n" +
-              "Use este arquivo como exemplo da estrutura aceita pelo bot.",
-            files: [attachment],
-            ephemeral: true
+              "📋 **MODELO JSON**\n\n" +
+              "Copie este exemplo e altere como quiser:\n\n" +
+              "```json\n" +
+              model +
+              "\n```"
           });
 
           return;
         }
 
-        /* ================================
+        /* ===================================================
+           TUTORIAL
+        =================================================== */
+
+        if (
+          interaction.customId ===
+          "tutorial"
+        ) {
+
+          await sendTutorial(
+            interaction
+          );
+
+          return;
+        }
+
+        /* ===================================================
+           STATUS
+        =================================================== */
+
+        if (
+          interaction.customId ===
+          "status"
+        ) {
+
+          const stats =
+            getServerStats(
+              interaction.guild
+            );
+
+          await interaction.reply({
+            ephemeral: true,
+            content:
+              "📊 **STATUS DO SERVIDOR**\n\n" +
+              `👥 Membros: **${stats.members}**\n` +
+              `🎭 Cargos: **${stats.roles}**\n` +
+              `📁 Categorias: **${stats.categories}**\n` +
+              `💬 Canais: **${stats.channels}**\n\n` +
+              `🏠 Servidor: **${interaction.guild.name}**\n` +
+              `⚡ Ping do bot: **${client.ws.ping}ms**`
+          });
+
+          return;
+        }
+
+        /* ===================================================
+           ADMINISTRAR
+        =================================================== */
+
+        if (
+          interaction.customId ===
+          "administrar"
+        ) {
+
+          const me =
+            interaction.guild.members.me;
+
+          const highestRole =
+            me?.roles?.highest;
+
+          await interaction.reply({
+            ephemeral: true,
+            content:
+              "⚙️ **ADMINISTRAÇÃO**\n\n" +
+              "🔐 Painel: somente administradores\n" +
+              "🛡️ Permissões: controladas pelo JSON\n" +
+              `👑 Maior cargo do bot: **${highestRole?.name || "Desconhecido"}**\n\n` +
+              "O Discord impede o bot de gerenciar cargos que estejam acima do maior cargo dele."
+          });
+
+          return;
+        }
+
+        /* ===================================================
            GERAR TEMPLATE
-        ================================= */
+        =================================================== */
 
         if (
           interaction.customId ===
@@ -932,34 +1165,40 @@ client.on(
         ) {
 
           await interaction.reply({
+            ephemeral: true,
             content:
               "🚀 **Gerar Template**\n\n" +
-              "Envie agora o arquivo `.json` neste canal.",
-            ephemeral: true
+              "Envie o arquivo `.json` neste canal."
           });
 
           try {
 
             const template =
-              await waitForJson(interaction);
-
-            await interaction.editReply({
-              content:
-                "🔍 JSON recebido. Validando..."
-            });
+              await waitForJSON(
+                interaction
+              );
 
             const errors =
-              validateTemplate(template);
+              validateTemplate(
+                template
+              );
 
-            if (errors.length > 0) {
+            if (
+              errors.length > 0
+            ) {
 
               await interaction.editReply({
                 content:
-                  "❌ **Seu JSON possui erros:**\n\n" +
+                  "❌ **JSON inválido**\n\n" +
                   errors
-                    .map(e => `• ${e}`)
+                    .map(
+                      e => `• ${e}`
+                    )
                     .join("\n")
-                    .slice(0, 1800)
+                    .slice(
+                      0,
+                      1800
+                    )
               });
 
               return;
@@ -971,25 +1210,35 @@ client.on(
                 "Criando cargos, categorias, canais e permissões..."
             });
 
-            const result =
-              await applyTemplate(
-                interaction.guild,
-                template
+            await applyTemplate(
+              interaction.guild,
+              template
+            );
+
+            /*
+             * Lê os números DEPOIS da criação.
+             * Portanto os números são do servidor real.
+             */
+
+            const stats =
+              getServerStats(
+                interaction.guild
               );
 
             await interaction.editReply({
               content:
-                "✅ **Template criado!**\n\n" +
-                `👤 Cargos: **${result.roles}**\n` +
-                `📁 Categorias: **${result.categories}**\n` +
-                `💬 Canais: **${result.channels}**\n\n` +
-                "⚠️ Cargos acima do maior cargo do bot não podem ser gerenciados pelo Discord."
+                "✅ **Template criado com sucesso!**\n\n" +
+                `👥 Membros no servidor: **${stats.members}**\n` +
+                `🎭 Cargos: **${stats.roles}**\n` +
+                `📁 Categorias: **${stats.categories}**\n` +
+                `💬 Canais: **${stats.channels}**\n\n` +
+                "⚠️ A hierarquia do Discord continua sendo respeitada."
             });
 
           } catch (error) {
 
             console.error(
-              "Erro ao gerar template:",
+              "❌ Erro ao gerar template:",
               error
             );
 
@@ -997,78 +1246,15 @@ client.on(
               content:
                 "❌ **Não foi possível criar o template.**\n\n" +
                 String(
-                  error.message || error
-                ).slice(0, 1800)
+                  error.message ||
+                  error
+                ).slice(
+                  0,
+                  1800
+                )
             });
+
           }
-
-          return;
-        }
-
-        /* ================================
-           TUTORIAL
-        ================================= */
-
-        if (
-          interaction.customId ===
-          "tutorial"
-        ) {
-
-          await showTutorial(
-            interaction
-          );
-
-          return;
-        }
-
-        /* ================================
-           STATUS
-        ================================= */
-
-        if (
-          interaction.customId ===
-          "status"
-        ) {
-
-          const guild =
-            interaction.guild;
-
-          const botMember =
-            guild.members.me;
-
-          await interaction.reply({
-            content:
-              "📊 **Status do Bot**\n\n" +
-              `🤖 Bot: **${client.user.tag}**\n` +
-              `🏠 Servidor: **${guild.name}**\n` +
-              `👥 Membros: **${guild.memberCount}**\n` +
-              `🎭 Cargos: **${guild.roles.cache.size}**\n` +
-              `💬 Canais: **${guild.channels.cache.size}**\n` +
-              `⚡ Ping: **${client.ws.ping}ms**\n` +
-              `🔐 Cargo máximo do bot: **${botMember?.roles.highest?.name || "Desconhecido"}**`,
-            ephemeral: true
-          });
-
-          return;
-        }
-
-        /* ================================
-           ADMINISTRAR
-        ================================= */
-
-        if (
-          interaction.customId ===
-          "administrar"
-        ) {
-
-          await interaction.reply({
-            content:
-              "⚙️ **Administração**\n\n" +
-              "O bot está configurado para aceitar comandos e ações somente de administradores.\n\n" +
-              "Permissões do template são aplicadas conforme o JSON enviado.\n\n" +
-              "⚠️ O Discord impede o bot de modificar cargos que estejam acima do maior cargo dele.",
-            ephemeral: true
-          });
 
           return;
         }
@@ -1077,7 +1263,7 @@ client.on(
     } catch (error) {
 
       console.error(
-        "Erro geral na interação:",
+        "❌ Erro geral:",
         error
       );
 
@@ -1101,7 +1287,6 @@ client.on(
               "❌ Ocorreu um erro ao processar essa ação.",
             ephemeral: true
           });
-
         }
 
       } catch {}
