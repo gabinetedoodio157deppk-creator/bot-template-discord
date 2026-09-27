@@ -12,2111 +12,3019 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  StringSelectMenuBuilder,
+  RoleSelectMenuBuilder,
   MessageFlags
-} = require("discord.js");
+} = require('discord.js');
 
 const TOKEN = process.env.TOKEN;
-
 if (!TOKEN) {
-  console.error("❌ TOKEN não configurado.");
+  console.error('❌ TOKEN não configurado no Render.');
   process.exit(1);
 }
 
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages
-  ]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
 });
 
 const P = PermissionFlagsBits;
+const PREVIEW_TTL = 15 * 60 * 1000;
+const MAX_ITEMS = 100;
 
-const MAX_DESCRIPTION_LENGTH = 4000;
-const PREVIEW_TTL = 10 * 60 * 1000;
+// ============================================================
+// ESTADO TEMPORÁRIO DO CONSTRUTOR
+// ============================================================
 
-/* =========================================================
-   PERMISSÕES SUPORTADAS
-========================================================= */
+const builders = new Map();
 
-const PERMISSIONS = {
-  Administrator: P.Administrator,
+function key(guildId, userId) {
+  return `${guildId}:${userId}`;
+}
 
-  ManageGuild: P.ManageGuild,
-  ManageChannels: P.ManageChannels,
-  ManageRoles: P.ManageRoles,
-  ManageMessages: P.ManageMessages,
+function newBuilder() {
+  return {
+    createdAt: Date.now(),
+    personalize: true,
+    cleanFirst: false,
+    roles: [],
+    categories: [],
+    channels: [],
+    editingChannel: null
+  };
+}
 
-  KickMembers: P.KickMembers,
-  BanMembers: P.BanMembers,
-  ModerateMembers: P.ModerateMembers,
+function getBuilder(guildId, userId) {
+  const k = key(guildId, userId);
+  let state = builders.get(k);
 
-  ViewChannel: P.ViewChannel,
-  SendMessages: P.SendMessages,
-  ReadMessageHistory: P.ReadMessageHistory,
+  if (!state || Date.now() - state.createdAt > PREVIEW_TTL) {
+    state = newBuilder();
+    builders.set(k, state);
+  }
 
-  Connect: P.Connect,
-  Speak: P.Speak,
+  return state;
+}
 
-  MentionEveryone: P.MentionEveryone,
-  AttachFiles: P.AttachFiles,
-  EmbedLinks: P.EmbedLinks,
-  AddReactions: P.AddReactions,
+function saveBuilder(guildId, userId, state) {
+  state.createdAt = Date.now();
+  builders.set(key(guildId, userId), state);
+}
 
-  UseExternalEmojis: P.UseExternalEmojis,
-  UseExternalStickers: P.UseExternalStickers,
+function clearBuilder(guildId, userId) {
+  builders.delete(key(guildId, userId));
+}
 
-  CreateInstantInvite: P.CreateInstantInvite,
+setInterval(() => {
+  const now = Date.now();
 
-  ManageWebhooks: P.ManageWebhooks,
-  ManageNicknames: P.ManageNicknames,
-  ChangeNickname: P.ChangeNickname,
+  for (const [k, state] of builders) {
+    if (now - state.createdAt > PREVIEW_TTL) {
+      builders.delete(k);
+    }
+  }
+}, 60_000).unref();
 
-  SendMessagesInThreads: P.SendMessagesInThreads,
-  CreatePublicThreads: P.CreatePublicThreads,
-  CreatePrivateThreads: P.CreatePrivateThreads,
+// ============================================================
+// PERMISSÕES / NÍVEIS
+// ============================================================
 
-  UseApplicationCommands: P.UseApplicationCommands,
-  UseEmbeddedActivities: P.UseEmbeddedActivities
+const PERMISSION_NAMES = {
+  Administrator: 'Administrador',
+  ManageGuild: 'Gerenciar servidor',
+  ManageChannels: 'Gerenciar canais',
+  ManageRoles: 'Gerenciar cargos',
+  ManageMessages: 'Gerenciar mensagens',
+  KickMembers: 'Expulsar membros',
+  BanMembers: 'Banir membros',
+  ModerateMembers: 'Moderar membros',
+  ViewChannel: 'Ver canais',
+  SendMessages: 'Enviar mensagens',
+  ReadMessageHistory: 'Ler histórico',
+  Connect: 'Conectar',
+  Speak: 'Falar',
+  MentionEveryone: 'Mencionar @everyone',
+  AttachFiles: 'Anexar arquivos',
+  EmbedLinks: 'Inserir links',
+  AddReactions: 'Adicionar reações',
+  UseExternalEmojis: 'Usar emojis externos',
+  CreateInstantInvite: 'Criar convite',
+  ManageWebhooks: 'Gerenciar webhooks',
+  ManageNicknames: 'Gerenciar apelidos',
+  ChangeNickname: 'Alterar apelido',
+  SendMessagesInThreads: 'Enviar em threads',
+  CreatePublicThreads: 'Criar threads públicas',
+  CreatePrivateThreads: 'Criar threads privadas',
+  UseApplicationCommands: 'Usar comandos de aplicativos',
+  UseEmbeddedActivities: 'Usar atividades'
 };
 
-/* =========================================================
-   NOMES ALTERNATIVOS DE PERMISSÕES
-========================================================= */
+const PERMISSIONS = Object.fromEntries(
+  Object.keys(PERMISSION_NAMES).map(name => [
+    name,
+    P[name]
+  ])
+);
 
 const ALIASES = {
-  administrador: "Administrator",
-  admin: "Administrator",
-  dono: "Administrator",
+  administrador: 'Administrator',
+  admin: 'Administrator',
+  dono: 'Administrator',
+  owner: 'Administrator',
 
-  "gerenciar servidor": "ManageGuild",
-  "administrar servidor": "ManageGuild",
+  'todas as permissões': 'Administrator',
+  'todas permissoes': 'Administrator',
 
-  "gerenciar canais": "ManageChannels",
-  "administrar canais": "ManageChannels",
+  'gerenciar servidor': 'ManageGuild',
+  'gerenciar canais': 'ManageChannels',
+  'gerenciar cargos': 'ManageRoles',
+  'gerenciar mensagens': 'ManageMessages',
 
-  "gerenciar cargos": "ManageRoles",
-  "administrar cargos": "ManageRoles",
+  'expulsar membros': 'KickMembers',
+  expulsar: 'KickMembers',
+  kick: 'KickMembers',
 
-  "gerenciar mensagens": "ManageMessages",
-  "administrar mensagens": "ManageMessages",
+  banir: 'BanMembers',
+  ban: 'BanMembers',
 
-  "moderar mensagens": "ManageMessages",
+  moderar: 'ModerateMembers',
+  timeout: 'ModerateMembers',
 
-  expulsar: "KickMembers",
-  kick: "KickMembers",
+  'ver canais': 'ViewChannel',
+  visualizar: 'ViewChannel',
 
-  banir: "BanMembers",
-  ban: "BanMembers",
+  'enviar mensagens': 'SendMessages',
+  escrever: 'SendMessages',
 
-  timeout: "ModerateMembers",
-  moderar: "ModerateMembers",
+  'ler histórico': 'ReadMessageHistory',
+  'ler historico': 'ReadMessageHistory',
 
-  "ver canal": "ViewChannel",
-  visualizar: "ViewChannel",
+  conectar: 'Connect',
+  falar: 'Speak',
 
-  escrever: "SendMessages",
-  "enviar mensagens": "SendMessages",
+  'anexar arquivos': 'AttachFiles',
+  'inserir links': 'EmbedLinks',
 
-  "ler histórico": "ReadMessageHistory",
+  reações: 'AddReactions',
+  reacoes: 'AddReactions',
 
-  conectar: "Connect",
-  falar: "Speak",
+  'criar convite': 'CreateInstantInvite',
 
-  "mencionar todos": "MentionEveryone",
-
-  anexos: "AttachFiles",
-  "enviar arquivos": "AttachFiles",
-
-  embeds: "EmbedLinks",
-
-  reações: "AddReactions",
-
-  "emojis externos": "UseExternalEmojis",
-
-  convites: "CreateInstantInvite",
-
-  webhooks: "ManageWebhooks",
-
-  apelidos: "ManageNicknames",
-  "alterar apelido": "ChangeNickname"
+  'gerenciar webhooks': 'ManageWebhooks',
+  'gerenciar apelidos': 'ManageNicknames',
+  'alterar apelido': 'ChangeNickname'
 };
-
-/* =========================================================
-   NÍVEIS DE PERMISSÃO
-========================================================= */
 
 const LEVELS = {
-  1: [
-    "ViewChannel",
-    "SendMessages",
-    "ReadMessageHistory",
-    "Connect",
-    "Speak",
-    "AttachFiles",
-    "EmbedLinks",
-    "AddReactions",
-    "UseExternalEmojis",
-    "UseApplicationCommands"
-  ],
+  1: {
+    name: 'Membro',
+    permissions: [
+      'ViewChannel',
+      'SendMessages',
+      'ReadMessageHistory',
+      'Connect',
+      'Speak',
+      'AddReactions'
+    ]
+  },
 
-  2: [
-    "ViewChannel",
-    "SendMessages",
-    "ReadMessageHistory",
-    "Connect",
-    "Speak",
-    "AttachFiles",
-    "EmbedLinks",
-    "AddReactions",
-    "UseExternalEmojis",
-    "UseApplicationCommands",
-    "ManageNicknames",
-    "ManageMessages"
-  ],
+  2: {
+    name: 'Ajudante',
+    permissions: [
+      'ViewChannel',
+      'SendMessages',
+      'ReadMessageHistory',
+      'Connect',
+      'Speak',
+      'AddReactions',
+      'ManageMessages'
+    ]
+  },
 
-  3: [
-    "ViewChannel",
-    "SendMessages",
-    "ReadMessageHistory",
-    "Connect",
-    "Speak",
-    "AttachFiles",
-    "EmbedLinks",
-    "AddReactions",
-    "UseExternalEmojis",
-    "UseApplicationCommands",
-    "ManageNicknames",
-    "ManageMessages",
-    "ModerateMembers",
-    "KickMembers"
-  ],
+  3: {
+    name: 'Moderador',
+    permissions: [
+      'ViewChannel',
+      'SendMessages',
+      'ReadMessageHistory',
+      'Connect',
+      'Speak',
+      'AddReactions',
+      'ManageMessages',
+      'KickMembers',
+      'ModerateMembers'
+    ]
+  },
 
-  4: [
-    "ViewChannel",
-    "SendMessages",
-    "ReadMessageHistory",
-    "Connect",
-    "Speak",
-    "AttachFiles",
-    "EmbedLinks",
-    "AddReactions",
-    "UseExternalEmojis",
-    "UseExternalStickers",
-    "UseApplicationCommands",
-    "ManageNicknames",
-    "ManageMessages",
-    "ModerateMembers",
-    "KickMembers",
-    "BanMembers",
-    "ManageGuild",
-    "ManageChannels",
-    "ManageRoles",
-    "ManageWebhooks",
-    "MentionEveryone",
-    "CreateInstantInvite"
-  ],
+  4: {
+    name: 'Administrador',
+    permissions: [
+      'ViewChannel',
+      'SendMessages',
+      'ReadMessageHistory',
+      'Connect',
+      'Speak',
+      'AddReactions',
+      'ManageMessages',
+      'ManageChannels',
+      'ManageRoles',
+      'ManageGuild',
+      'KickMembers',
+      'ModerateMembers'
+    ]
+  },
 
-  5: [
-    "Administrator"
-  ]
+  5: {
+    name: 'Dono',
+    permissions: [
+      'Administrator'
+    ]
+  }
 };
 
-/* =========================================================
-   TIPOS DE CANAIS
-========================================================= */
-
-const CHANNEL_TYPES = {
-  text: ChannelType.GuildText,
-  chat: ChannelType.GuildText,
-  texto: ChannelType.GuildText,
-
-  announcement: ChannelType.GuildAnnouncement,
-  anuncio: ChannelType.GuildAnnouncement,
-  anuncios: ChannelType.GuildAnnouncement,
-
-  forum: ChannelType.GuildForum,
-  fórum: ChannelType.GuildForum,
-
-  voice: ChannelType.GuildVoice,
-  voz: ChannelType.GuildVoice,
-
-  stage: ChannelType.GuildStageVoice
-};
-
-/* =========================================================
-   ARMAZENAMENTO TEMPORÁRIO
-========================================================= */
-
-const pending = new Map();
-
-/* =========================================================
-   TEXTO
-========================================================= */
-
-function norm(value) {
-  return String(value ?? "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
+function normalize(text = '') {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
-    .replace(/\s+/g, " ")
     .trim();
 }
 
-function cleanName(value, fallback = "Sem nome") {
-  return String(value || fallback)
+function cleanName(
+  text,
+  fallback = 'sem-nome'
+) {
+  return String(text || fallback)
     .trim()
-    .replace(/\s+/g, " ")
     .slice(0, 100);
 }
 
-function slug(value) {
-  return (
-    norm(value)
-      .replace(/[^a-z0-9\s_-]/g, "")
-      .replace(/[\s_]+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "")
-      .slice(0, 100) || "novo-canal"
+function parseLevel(value) {
+  const n = Number(
+    String(value).match(/[1-5]/)?.[0]
   );
+
+  return n >= 1 && n <= 5
+    ? n
+    : null;
 }
 
-function unique(values) {
-  return [...new Set(values.filter(Boolean))];
-}
+function parsePermissionText(
+  text = '',
+  level = null
+) {
+  const normalized = normalize(text);
 
-/* =========================================================
-   CORES
-========================================================= */
+  let permissionSet = new Set();
 
-function getColor(value) {
-  const text = norm(value);
-
-  const colors = {
-    vermelho: "#ED4245",
-    azul: "#3498DB",
-    verde: "#2ECC71",
-    amarelo: "#F1C40F",
-    laranja: "#E67E22",
-    roxo: "#9B59B6",
-    rosa: "#EB459E",
-    ciano: "#1ABC9C",
-    preto: "#000000",
-    branco: "#FFFFFF"
-  };
-
-  for (const [name, color] of Object.entries(colors)) {
-    if (text.includes(name)) {
-      return color;
+  if (level && LEVELS[level]) {
+    for (const permission of LEVELS[level].permissions) {
+      permissionSet.add(permission);
     }
   }
 
-  return "#5865F2";
-}
+  const allRequested =
+    /(todas|todos).*(permiss|permissao)/.test(normalized) ||
+    normalized === 'todas';
 
-function getHex(value) {
-  const clean = String(value || "")
-    .replace("#", "")
-    .trim();
-
-  if (/^[0-9a-f]{6}$/i.test(clean)) {
-    return parseInt(clean, 16);
-  }
-
-  return 0x5865F2;
-}
-
-/* =========================================================
-   PERMISSÕES
-========================================================= */
-
-function resolvePermission(value) {
-  const normalized = norm(value);
-
-  if (PERMISSIONS[normalized]) {
-    return normalized;
-  }
-
-  if (ALIASES[normalized]) {
-    return ALIASES[normalized];
+  if (allRequested) {
+    permissionSet = new Set(
+      Object.keys(PERMISSIONS)
+    );
   }
 
   for (const [alias, permission] of Object.entries(ALIASES)) {
     if (normalized.includes(alias)) {
-      return permission;
+      permissionSet.add(permission);
     }
   }
 
-  return null;
-}
-
-function findPermissionNames(text) {
-  const normalized = norm(text);
-  const result = [];
-
-  for (const name of Object.keys(PERMISSIONS)) {
-    if (normalized.includes(norm(name))) {
-      result.push(name);
-    }
-  }
-
-  for (const [alias, permission] of Object.entries(ALIASES)) {
-    if (normalized.includes(alias)) {
-      result.push(permission);
-    }
-  }
-
-  return unique(result);
-}
-
-function permissionBits(names) {
-  return new PermissionsBitField(
-    unique(names || [])
-      .map(resolvePermission)
-      .filter(Boolean)
-      .map(permission => PERMISSIONS[permission])
-  );
-}
-
-/* =========================================================
-   NÍVEL
-========================================================= */
-
-function getLevel(text, fallback = 1) {
-  const normalized = norm(text);
-
-  const match = normalized.match(
-    /\bn[ií]vel\s*([1-5])\b/
-  );
-
-  if (match) {
-    return Number(match[1]);
-  }
-
-  if (
-    /\bdono\b|\bowner\b|\bcriador\b/.test(normalized)
-  ) {
-    return 5;
-  }
-
-  if (
-    /\badministrador\b|\badmin\b/.test(normalized)
-  ) {
-    return 4;
-  }
-
-  if (
-    /\bmoderador\b|\bmod\b/.test(normalized)
-  ) {
-    return 3;
-  }
-
-  if (
-    /\bajudante\b|\bhelper\b|\bsuporte\b/.test(normalized)
-  ) {
-    return 2;
-  }
-
-  return fallback;
-}
-
-/* =========================================================
-   PERMISSÕES DE UM CARGO
-========================================================= */
-
-function permissionsFor(text, level) {
-  const normalized = norm(text);
-
-  let permissions =
-    level === 5
-      ? ["Administrator"]
-      : [...(LEVELS[level] || LEVELS[1])];
-
-  const wantsAll =
-    /todas as permissoes|todas permissoes|tudo/.test(
-      normalized
-    );
-
-  if (wantsAll && level !== 5) {
-    permissions = Object.keys(PERMISSIONS).filter(
-      permission => permission !== "Administrator"
-    );
-  }
-
-  const negativePatterns = [
-    /sem ([^.;,\n]+)/g,
-    /menos ([^.;,\n]+)/g,
-    /exceto ([^.;,\n]+)/g,
-    /retire ([^.;,\n]+)/g,
-    /retirar ([^.;,\n]+)/g
-  ];
-
-  for (const pattern of negativePatterns) {
-    let match;
-
-    while ((match = pattern.exec(normalized))) {
-      const denied =
-        findPermissionNames(match[1]);
-
-      permissions = permissions.filter(
-        permission =>
-          !denied.includes(permission)
-      );
-    }
-  }
-
-  if (!wantsAll && level !== 5) {
-    permissions.push(
-      ...findPermissionNames(normalized)
-    );
-  }
-
-  return unique(permissions);
-}
-
-/* =========================================================
-   DUPLICADOS
-========================================================= */
-
-function dedupe(items) {
-  const map = new Map();
-
-  for (const item of items) {
-    const key = norm(item.name);
-
-    if (!key) continue;
-
-    if (!map.has(key)) {
-      map.set(key, item);
-    }
-  }
-
-  return [...map.values()];
-}
-
-/* =========================================================
-   NOME DO SERVIDOR
-========================================================= */
-
-function detectServerName(text) {
-  const patterns = [
-    /nome do servidor\s*[:=-]\s*(.+)/i,
-    /servidor chamado\s+(.+)/i,
-    /servidor se chama\s+(.+)/i,
-    /nome\s*[:=-]\s*(.+)/i
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-
-    if (match) {
-      return cleanName(match[1]);
-    }
-  }
-
-  if (/futebol/i.test(text)) {
-    return "Comunidade de Futebol";
-  }
-
-  return "Novo Servidor";
-}
-
-/* =========================================================
-   DETECÇÃO DE CARGOS
-========================================================= */
-
-function detectRoles(text) {
-  const roles = [];
-
-  for (const line of text.split("\n")) {
-    const cleanLine = line.trim();
-
-    const match = cleanLine.match(
-      /^[-•*]?\s*(.+?)\s+n[ií]vel\s*([1-5])/i
-    );
-
-    if (!match) continue;
-
-    const name = cleanName(match[1]);
-    const level = Number(match[2]);
-
-    if (!name) continue;
-
-    roles.push({
-      name,
-      level,
-      color: getColor(cleanLine),
-      permissions: permissionsFor(
-        cleanLine,
-        level
-      ),
-      position: level,
-      hoist: level >= 2,
-      mentionable: true
-    });
-  }
-
-  const normalized = norm(text);
-
-  const defaults = [
-    [/\bdono\b|\bowner\b/, "Dono", 5],
-    [
-      /\badministrador\b|\badmin\b/,
-      "Administrador",
-      4
-    ],
-    [
-      /\bmoderador\b|\bmod\b/,
-      "Moderador",
-      3
-    ],
-    [
-      /\bajudante\b|\bhelper\b|\bsuporte\b/,
-      "Ajudante",
-      2
-    ],
-    [
-      /\bmembro\b|\bmember\b|\busuario\b/,
-      "Membro",
-      1
-    ]
-  ];
-
-  for (const [pattern, name, level] of defaults) {
-    if (
-      pattern.test(normalized) &&
-      !roles.some(
-        role =>
-          norm(role.name) === norm(name)
-      )
-    ) {
-      roles.push({
-        name,
-        level,
-        color: getColor(name),
-        permissions: permissionsFor(
-          `${name} nível ${level}`,
-          level
-        ),
-        position: level,
-        hoist: level >= 2,
-        mentionable: true
-      });
-    }
-  }
-
-  if (
-    !roles.some(role => role.level === 1)
-  ) {
-    roles.push({
-      name: "Membro",
-      level: 1,
-      color: "#FFFFFF",
-      permissions: [...LEVELS[1]],
-      position: 1,
-      hoist: false,
-      mentionable: true
-    });
-  }
-
-  return dedupe(roles);
-}
-
-/* =========================================================
-   DETECÇÃO DE CATEGORIAS
-========================================================= */
-
-function detectCategories(text) {
-  const categories = [];
-  let active = false;
-
-  for (const line of text.split("\n")) {
-    const cleanLine = line.trim();
-    const normalized = norm(cleanLine);
-
-    if (
-      /^categorias?:/.test(normalized) ||
-      normalized === "categorias"
-    ) {
-      active = true;
-      continue;
-    }
-
-    if (
-      /^(canais|cargos|regras|preferencias|preferências):?/.test(
-        normalized
-      )
-    ) {
-      active = false;
-    }
-
-    const visibilityMatch =
-      cleanLine.match(
-        /^[-•*]?\s*(.+?)\s+(p[uú]blica?|privada?|p[uú]blico|privado)$/i
-      );
-
-    if (visibilityMatch) {
-      categories.push({
-        name: cleanName(
-          visibilityMatch[1]
-        ),
-        visibility:
-          /privad/i.test(
-            visibilityMatch[2]
-          )
-            ? "private"
-            : "public",
-        position:
-          categories.length + 1
-      });
-
-      continue;
-    }
-
-    if (
-      active &&
-      cleanLine &&
-      !cleanLine.includes(":") &&
-      cleanLine.length <= 100
-    ) {
-      categories.push({
-        name: cleanName(
-          cleanLine.replace(
-            /^[-•*]\s*/,
-            ""
-          )
-        ),
-        visibility:
-          /admin|equipe/i.test(
-            cleanLine
-          )
-            ? "private"
-            : "public",
-        position:
-          categories.length + 1
-      });
-    }
-  }
-
-  const normalized = norm(text);
-
-  const automatic = [
-    ["comunidade", "COMUNIDADE", "public"],
-    ["futebol", "FUTEBOL", "public"],
-    ["jogos", "JOGOS", "public"],
-    ["voz", "VOZ", "public"],
-    ["admin", "ADMINISTRAÇÃO", "private"],
-    ["equipe", "EQUIPE", "private"]
-  ];
-
-  for (const [
-    keyword,
-    name,
-    visibility
-  ] of automatic) {
-    if (
-      normalized.includes(keyword) &&
-      !categories.some(
-        category =>
-          norm(category.name) ===
-          norm(name)
-      )
-    ) {
-      categories.push({
-        name,
-        visibility,
-        position:
-          categories.length + 1
-      });
-    }
-  }
-
-  if (!categories.length) {
-    categories.push({
-      name: "COMUNIDADE",
-      visibility: "public",
-      position: 1
-    });
-  }
-
-  return dedupe(categories);
-}
-
-/* =========================================================
-   CATEGORIAS
-========================================================= */
-
-function categoryFromText(
-  categories,
-  text
-) {
-  const normalized = norm(text);
-
-  return (
-    categories.find(category =>
-      normalized.includes(
-        norm(category.name)
-      )
-    )?.name || null
-  );
-}
-
-function categoryByKeyword(
-  categories,
-  keyword
-) {
-  return (
-    categories.find(category =>
-      norm(category.name).includes(
-        norm(keyword)
-      )
-    )?.name || null
-  );
-}
-
-/* =========================================================
-   DETECÇÃO DE CANAIS
-========================================================= */
-
-function detectChannels(
-  text,
-  categories
-) {
-  const channels = [];
-  let active = false;
-
-  for (const line of text.split("\n")) {
-    const cleanLine = line.trim();
-    const normalized = norm(cleanLine);
-
-    if (
-      /^canais?:/.test(normalized) ||
-      normalized === "canais"
-    ) {
-      active = true;
-      continue;
-    }
-
-    if (
-      /^(cargos|categorias|regras|preferencias|preferências):?/.test(
-        normalized
-      )
-    ) {
-      active = false;
-    }
-
-    if (!active || !cleanLine) {
-      continue;
-    }
-
-    const raw = cleanLine
-      .replace(/^[-•*]\s*/, "")
-      .replace(/^#/, "")
-      .trim();
-
-    if (
-      !raw ||
-      raw.length > 100
-    ) {
-      continue;
-    }
-
-    let type = "text";
-
-    if (
-      /\bvoz\b|\bvoice\b|\bsala de voz\b/.test(
-        normalized
-      )
-    ) {
-      type = "voice";
-    }
-
-    if (
-      /\bf[oó]rum\b|\bforum\b/.test(
-        normalized
-      )
-    ) {
-      type = "forum";
-    }
-
-    let visibility = "public";
-
-    if (
-      /somente leitura|read only|apenas leitura/.test(
-        normalized
-      )
-    ) {
-      visibility = "readonly";
-    } else if (
-      /somente admins|apenas admins|s[oó] admins|privado para admins/.test(
-        normalized
-      )
-    ) {
-      visibility = "admins";
-    } else if (
-      /somente mods|apenas mods|privado para mods/.test(
-        normalized
-      )
-    ) {
-      visibility = "mods";
-    } else if (
-      /privado|privada/.test(
-        normalized
-      )
-    ) {
-      visibility = "private";
-    }
-
-    const display = raw
-      .replace(
-        /\s+(somente leitura|read only|somente admins|apenas admins|s[oó] admins|privado|privada|p[uú]blico|p[uú]blica).*$/i,
-        ""
-      )
-      .trim();
-
-    channels.push({
-      name: slug(display),
-      type,
-      category:
-        categoryFromText(
-          categories,
-          raw
-        ) ||
-        categoryByKeyword(
-          categories,
-          "comunidade"
-        ) ||
-        categories[0].name,
-      visibility,
-      position:
-        channels.length + 1
-    });
-  }
-
-  const automatic = [
-    [
-      /\bregras\b/,
-      "regras",
-      "readonly"
-    ],
-    [
-      /\bchat geral\b|\bchat-geral\b|\bchat\b/,
-      "chat-geral",
-      "public"
-    ],
-    [
-      /\bnot[ií]cias\b/,
-      "noticias",
-      "public"
-    ],
-    [
-      /\bmemes\b/,
-      "memes",
-      "public"
-    ],
-    [
-      /\blogs?\b/,
-      "logs",
-      "admins"
-    ]
-  ];
-
-  for (const [
-    pattern,
-    name,
-    visibility
-  ] of automatic) {
-    if (
-      pattern.test(norm(text)) &&
-      !channels.some(
-        channel =>
-          channel.name === name
-      )
-    ) {
-      channels.push({
-        name,
-        type: "text",
-        category:
-          visibility === "admins"
-            ? categoryByKeyword(
-                categories,
-                "admin"
-              )
-            : categoryByKeyword(
-                categories,
-                "comunidade"
-              ) ||
-              categories[0].name,
-        visibility,
-        position:
-          channels.length + 1
-      });
-    }
-  }
-
-  if (!channels.length) {
-    channels.push(
-      {
-        name: "regras",
-        type: "text",
-        category:
-          categories[0].name,
-        visibility: "readonly",
-        position: 1
-      },
-      {
-        name: "chat-geral",
-        type: "text",
-        category:
-          categories[0].name,
-        visibility: "public",
-        position: 2
+  if (allRequested) {
+    for (const [alias, permission] of Object.entries(ALIASES)) {
+      if (
+        normalized.includes(`menos ${alias}`) ||
+        normalized.includes(`exceto ${alias}`) ||
+        normalized.includes(`sem ${alias}`)
+      ) {
+        permissionSet.delete(permission);
       }
-    );
+    }
   }
 
-  return dedupe(channels);
+  if (permissionSet.has('Administrator')) {
+    permissionSet = new Set([
+      'Administrator'
+    ]);
+  }
+
+  return [
+    ...permissionSet
+  ];
 }
 
-/* =========================================================
-   INTERPRETADOR
-========================================================= */
-
-function interpret(text) {
-  if (!text || !text.trim()) {
-    throw new Error(
-      "Descreva como você quer seu servidor."
-    );
-  }
-
-  if (
-    text.length >
-    MAX_DESCRIPTION_LENGTH
-  ) {
-    throw new Error(
-      `A descrição pode ter no máximo ${MAX_DESCRIPTION_LENGTH} caracteres.`
-    );
-  }
-
-  const roles =
-    detectRoles(text);
-
-  const categories =
-    detectCategories(text);
-
-  const channels =
-    detectChannels(
-      text,
-      categories
-    );
-
-  for (const channel of channels) {
-    const category =
-      categories.find(
-        item =>
-          norm(item.name) ===
-          norm(channel.category)
-      );
-
-    if (
-      category &&
-      category.visibility ===
-        "private" &&
-      channel.visibility ===
-        "public"
-    ) {
-      channel.visibility =
-        "private";
-    }
-  }
-
-  return {
-    version: 1,
-
-    server: {
-      name: detectServerName(text)
-    },
-
-    roles,
-
-    categories,
-
-    channels
-  };
+function permissionsForLevel(
+  level,
+  description = ''
+) {
+  return parsePermissionText(
+    description,
+    level
+  );
 }
 
-/* =========================================================
-   VALIDAÇÃO
-========================================================= */
+function hexToInt(color) {
+  if (!color) return null;
 
-function validateTemplate(template) {
-  if (
-    !template ||
-    typeof template !== "object"
-  ) {
-    throw new Error(
-      "Template inválido."
-    );
+  const value = String(color)
+    .trim()
+    .replace('#', '');
+
+  if (!/^[0-9a-fA-F]{6}$/.test(value)) {
+    return null;
   }
 
-  if (
-    !template.server ||
-    typeof template.server.name !==
-      "string"
-  ) {
-    throw new Error(
-      "Nome do servidor inválido."
-    );
-  }
-
-  if (
-    !Array.isArray(
-      template.roles
-    ) ||
-    !Array.isArray(
-      template.categories
-    ) ||
-    !Array.isArray(
-      template.channels
-    )
-  ) {
-    throw new Error(
-      "O template precisa possuir cargos, categorias e canais."
-    );
-  }
-
-  const roleNames =
-    new Set();
-
-  for (const role of template.roles) {
-    if (!role.name) {
-      throw new Error(
-        "Existe um cargo sem nome."
-      );
-    }
-
-    const key =
-      norm(role.name);
-
-    if (
-      roleNames.has(key)
-    ) {
-      throw new Error(
-        `Cargo duplicado: ${role.name}`
-      );
-    }
-
-    roleNames.add(key);
-
-    role.permissions =
-      unique(
-        (role.permissions || [])
-          .map(resolvePermission)
-          .filter(Boolean)
-      );
-  }
-
-  const categoryNames =
-    new Set();
-
-  for (const category of template.categories) {
-    if (!category.name) {
-      throw new Error(
-        "Existe uma categoria sem nome."
-      );
-    }
-
-    const key =
-      norm(category.name);
-
-    if (
-      categoryNames.has(key)
-    ) {
-      throw new Error(
-        `Categoria duplicada: ${category.name}`
-      );
-    }
-
-    categoryNames.add(key);
-  }
-
-  const channelNames =
-    new Set();
-
-  for (const channel of template.channels) {
-    if (!channel.name) {
-      throw new Error(
-        "Existe um canal sem nome."
-      );
-    }
-
-    const key =
-      norm(channel.name);
-
-    if (
-      channelNames.has(key)
-    ) {
-      throw new Error(
-        `Canal duplicado: ${channel.name}`
-      );
-    }
-
-    channelNames.add(key);
-
-    if (
-      !CHANNEL_TYPES[
-        channel.type
-      ]
-    ) {
-      channel.type = "text";
-    }
-
-    if (
-      channel.category &&
-      !categoryNames.has(
-        norm(channel.category)
-      )
-    ) {
-      throw new Error(
-        `Categoria inexistente: ${channel.category}`
-      );
-    }
-  }
+  return parseInt(value, 16);
 }
 
-/* =========================================================
-   PERMISSÃO DO USUÁRIO
-========================================================= */
+function unique(arr) {
+  return [
+    ...new Set(arr)
+  ];
+}
+
+function roleByName(
+  guild,
+  name
+) {
+  const target = normalize(name);
+
+  return guild.roles.cache.find(
+    role =>
+      normalize(role.name) === target
+  );
+}
+
+function categoryByName(
+  guild,
+  name
+) {
+  const target = normalize(name);
+
+  return guild.channels.cache.find(
+    channel =>
+      channel.type === ChannelType.GuildCategory &&
+      normalize(channel.name) === target
+  );
+}
+
+function channelByNameAndType(
+  guild,
+  name,
+  type
+) {
+  const target = normalize(name);
+
+  return guild.channels.cache.find(
+    channel =>
+      channel.type === type &&
+      normalize(channel.name) === target
+  );
+}
+
+// ============================================================
+// SEGURANÇA
+// ============================================================
 
 function isAdmin(interaction) {
-  return Boolean(
+  return (
     interaction.memberPermissions?.has(
       P.Administrator
+    ) ||
+    interaction.memberPermissions?.has(
+      P.ManageGuild
     )
   );
 }
 
-/* =========================================================
-   OVERWRITES DE CATEGORIA
-========================================================= */
+async function requireAdmin(interaction) {
+  if (isAdmin(interaction)) {
+    return true;
+  }
 
-function categoryOverwrites(
-  guild,
-  category,
-  roles
-) {
+  const payload = {
+    content:
+      '❌ Apenas administradores podem usar este painel.',
+    flags: MessageFlags.Ephemeral
+  };
+
   if (
-    category.visibility !==
-    "private"
+    interaction.replied ||
+    interaction.deferred
   ) {
-    return [];
+    await interaction
+      .followUp(payload)
+      .catch(() => {});
+  } else {
+    await interaction
+      .reply(payload)
+      .catch(() => {});
   }
 
-  const overwrites = [
-    {
-      id:
-        guild.roles.everyone.id,
-      deny: [P.ViewChannel]
-    }
-  ];
-
-  for (const roleData of roles) {
-    if (
-      roleData.level >= 4 ||
-      roleData.permissions.includes(
-        "Administrator"
-      )
-    ) {
-      const role =
-        guild.roles.cache.find(
-          item =>
-            norm(item.name) ===
-            norm(roleData.name)
-        );
-
-      if (role) {
-        overwrites.push({
-          id: role.id,
-          allow: [P.ViewChannel]
-        });
-      }
-    }
-  }
-
-  return overwrites;
+  return false;
 }
 
-/* =========================================================
-   OVERWRITES DE CANAL
-========================================================= */
+function ephemeralPayload(data = {}) {
+  return {
+    ...data,
+    flags: MessageFlags.Ephemeral
+  };
+}
 
-function channelOverwrites(
+// ============================================================
+// EMBEDS / PAINÉIS
+// ============================================================
+
+function panelEmbed(
   guild,
-  data,
-  roles
+  state
 ) {
-  const everyone =
-    guild.roles.everyone.id;
-
-  const overwrites = [];
-
-  if (
-    data.visibility ===
-    "public"
-  ) {
-    overwrites.push({
-      id: everyone,
-      allow: [
-        P.ViewChannel,
-        P.ReadMessageHistory,
-        P.SendMessages
-      ]
-    });
-
-    if (
-      data.type === "voice"
-    ) {
-      overwrites[0].allow = [
-        P.ViewChannel,
-        P.Connect,
-        P.Speak
-      ];
-    }
-  }
-
-  if (
-    data.visibility ===
-    "readonly"
-  ) {
-    overwrites.push({
-      id: everyone,
-      allow: [
-        P.ViewChannel,
-        P.ReadMessageHistory
-      ],
-      deny: [
-        P.SendMessages
-      ]
-    });
-  }
-
-  if (
-    data.visibility ===
-      "private" ||
-    data.visibility ===
-      "admins" ||
-    data.visibility ===
-      "mods"
-  ) {
-    overwrites.push({
-      id: everyone,
-      deny: [
-        P.ViewChannel
-      ]
-    });
-
-    const minimumLevel =
-      data.visibility ===
-      "mods"
-        ? 3
-        : 4;
-
-    for (const roleData of roles) {
-      if (
-        roleData.level >=
-          minimumLevel ||
-        roleData.permissions.includes(
-          "Administrator"
+  const roles = state.roles.length
+    ? state.roles
+        .map(
+          role =>
+            `• **${role.name}** — nível ${role.level}`
         )
-      ) {
-        const role =
-          guild.roles.cache.find(
-            item =>
-              norm(item.name) ===
-              norm(roleData.name)
+        .join('\n')
+    : 'Nenhum cargo configurado.';
+
+  const categories = state.categories.length
+    ? state.categories
+        .map(
+          category =>
+            `• **${category.name}** — ${
+              category.private
+                ? '🔒 privado'
+                : '🌎 público'
+            }`
+        )
+        .join('\n')
+    : 'Nenhuma categoria configurada.';
+
+  const channels = state.channels.length
+    ? state.channels
+        .map(channel => {
+          const icon =
+            channel.type === 'voice'
+              ? '🔊'
+              : channel.type === 'announcement'
+                ? '📢'
+                : '💬';
+
+          return (
+            `• ${icon} **${channel.name}**` +
+            (
+              channel.category
+                ? ` → ${channel.category}`
+                : ''
+            )
           );
-
-        if (role) {
-          overwrites.push({
-            id: role.id,
-            allow: [
-              P.ViewChannel,
-              P.ReadMessageHistory,
-              P.SendMessages
-            ]
-          });
-        }
-      }
-    }
-  }
-
-  return overwrites;
-}
-
-/* =========================================================
-   CRIAR / ATUALIZAR CARGOS
-========================================================= */
-
-async function ensureRoles(
-  guild,
-  template
-) {
-  const map =
-    new Map();
-
-  const botHighest =
-    guild.members.me?.roles
-      ?.highest;
-
-  for (
-    const data of [
-      ...template.roles
-    ].sort(
-      (a, b) =>
-        (a.position || 1) -
-        (b.position || 1)
-    )
-  ) {
-    let role =
-      guild.roles.cache.find(
-        item =>
-          norm(item.name) ===
-          norm(data.name)
-      );
-
-    if (!role) {
-      role =
-        await guild.roles.create({
-          name: cleanName(
-            data.name
-          ),
-          color: getHex(
-            data.color
-          ),
-          permissions:
-            permissionBits(
-              data.permissions
-            ),
-          hoist: Boolean(
-            data.hoist
-          ),
-          mentionable:
-            Boolean(
-              data.mentionable
-            ),
-          reason:
-            "Criador Inteligente"
-        });
-    } else if (
-      botHighest &&
-      role.position <
-        botHighest.position
-    ) {
-      await role
-        .edit({
-          color: getHex(
-            data.color
-          ),
-          permissions:
-            permissionBits(
-              data.permissions
-            ),
-          hoist: Boolean(
-            data.hoist
-          ),
-          mentionable:
-            Boolean(
-              data.mentionable
-            ),
-          reason:
-            "Criador Inteligente"
         })
-        .catch(error =>
-          console.log(
-            `⚠️ Cargo ${role.name}: ${error.message}`
-          )
-        );
-    }
-
-    map.set(
-      norm(data.name),
-      role
-    );
-  }
-
-  const positions = [];
-
-  for (const data of template.roles) {
-    const role =
-      map.get(
-        norm(data.name)
-      );
-
-    if (
-      !role ||
-      role.managed ||
-      !botHighest
-    ) {
-      continue;
-    }
-
-    if (
-      role.id === guild.id
-    ) {
-      continue;
-    }
-
-    if (
-      role.position >=
-      botHighest.position
-    ) {
-      console.log(
-        `⚠️ Não posso mover ${role.name}: cargo acima do bot.`
-      );
-
-      continue;
-    }
-
-    positions.push({
-      role: role.id,
-      position: Math.max(
-        1,
-        Number(
-          data.position
-        ) || 1
-      )
-    });
-  }
-
-  if (positions.length) {
-    await guild.roles
-      .setPositions(
-        positions
-      )
-      .catch(error =>
-        console.log(
-          `⚠️ Hierarquia: ${error.message}`
-        )
-      );
-  }
-
-  return map;
-}
-
-/* =========================================================
-   CATEGORIAS
-========================================================= */
-
-async function ensureCategories(
-  guild,
-  template
-) {
-  const map =
-    new Map();
-
-  for (const data of template.categories) {
-    let category =
-      guild.channels.cache.find(
-        channel =>
-          channel.type ===
-            ChannelType.GuildCategory &&
-          norm(channel.name) ===
-            norm(data.name)
-      );
-
-    const overwrites =
-      categoryOverwrites(
-        guild,
-        data,
-        template.roles
-      );
-
-    if (!category) {
-      category =
-        await guild.channels.create({
-          name: cleanName(
-            data.name
-          ),
-          type:
-            ChannelType.GuildCategory,
-          permissionOverwrites:
-            overwrites,
-          reason:
-            "Criador Inteligente"
-        });
-    } else {
-      if (overwrites.length) {
-        await category.permissionOverwrites
-          .set(
-            overwrites,
-            "Criador Inteligente"
-          )
-          .catch(error =>
-            console.log(
-              `⚠️ Categoria ${category.name}: ${error.message}`
-            )
-          );
-      }
-    }
-
-    map.set(
-      norm(data.name),
-      category
-    );
-  }
-
-  for (const data of template.categories) {
-    const category =
-      map.get(
-        norm(data.name)
-      );
-
-    if (!category) {
-      continue;
-    }
-
-    await category
-      .setPosition(
-        Math.max(
-          0,
-          Number(
-            data.position
-          ) || 0
-        )
-      )
-      .catch(error =>
-        console.log(
-          `⚠️ Posição da categoria ${category.name}: ${error.message}`
-        )
-      );
-  }
-
-  return map;
-}
-
-/* =========================================================
-   CANAIS
-========================================================= */
-
-async function ensureChannels(
-  guild,
-  template,
-  categoryMap
-) {
-  const created =
-    [];
-
-  for (const data of template.channels) {
-    const type =
-      CHANNEL_TYPES[
-        data.type
-      ] ||
-      ChannelType.GuildText;
-
-    let channel =
-      guild.channels.cache.find(
-        item =>
-          item.type === type &&
-          norm(item.name) ===
-            norm(data.name)
-      );
-
-    const parent =
-      data.category
-        ? categoryMap.get(
-            norm(
-              data.category
-            )
-          )
-        : null;
-
-    const overwrites =
-      channelOverwrites(
-        guild,
-        data,
-        template.roles
-      );
-
-    if (!channel) {
-      channel =
-        await guild.channels.create({
-          name: slug(
-            data.name
-          ),
-          type,
-          parent:
-            parent?.id,
-          permissionOverwrites:
-            overwrites,
-          reason:
-            "Criador Inteligente"
-        });
-    } else {
-      const edit = {};
-
-      if (parent) {
-        edit.parent =
-          parent.id;
-      }
-
-      if (overwrites.length) {
-        edit.permissionOverwrites =
-          overwrites;
-      }
-
-      if (
-        Object.keys(edit)
-          .length
-      ) {
-        await channel
-          .edit(edit)
-          .catch(error =>
-            console.log(
-              `⚠️ Canal ${channel.name}: ${error.message}`
-            )
-          );
-      }
-    }
-
-    await channel
-      .setPosition(
-        Math.max(
-          0,
-          Number(
-            data.position
-          ) || 0
-        )
-      )
-      .catch(error =>
-        console.log(
-          `⚠️ Posição canal ${channel.name}: ${error.message}`
-        )
-      );
-
-    created.push(
-      channel
-    );
-  }
-
-  return created;
-}
-
-/* =========================================================
-   APLICAR TEMPLATE
-========================================================= */
-
-async function applyTemplate(
-  guild,
-  template
-) {
-  validateTemplate(
-    template
-  );
-
-  const bot =
-    guild.members.me;
-
-  if (!bot) {
-    throw new Error(
-      "Não consegui localizar o bot no servidor."
-    );
-  }
-
-  if (
-    !bot.permissions.has(
-      P.ManageRoles
-    )
-  ) {
-    throw new Error(
-      "O bot precisa da permissão **Gerenciar Cargos**."
-    );
-  }
-
-  if (
-    !bot.permissions.has(
-      P.ManageChannels
-    )
-  ) {
-    throw new Error(
-      "O bot precisa da permissão **Gerenciar Canais**."
-    );
-  }
-
-  const roles =
-    await ensureRoles(
-      guild,
-      template
-    );
-
-  const categories =
-    await ensureCategories(
-      guild,
-      template
-    );
-
-  const channels =
-    await ensureChannels(
-      guild,
-      template,
-      categories
-    );
-
-  return {
-    roles: roles.size,
-    categories:
-      categories.size,
-    channels:
-      channels.length
-  };
-}
-
-/* =========================================================
-   STATUS
-========================================================= */
-
-function getStatus(guild) {
-  return {
-    members:
-      guild.memberCount,
-
-    roles:
-      guild.roles.cache.filter(
-        role =>
-          role.id !== guild.id
-      ).size,
-
-    categories:
-      guild.channels.cache.filter(
-        channel =>
-          channel.type ===
-          ChannelType.GuildCategory
-      ).size,
-
-    channels:
-      guild.channels.cache.filter(
-        channel =>
-          channel.type !==
-          ChannelType.GuildCategory
-      ).size
-  };
-}
-
-/* =========================================================
-   PRÉVIA
-========================================================= */
-
-function buildPreview(
-  template
-) {
-  const roles =
-    template.roles
-      .map(
-        role =>
-          `• **${role.name}** — nível ${role.level}`
-      )
-      .join("\n")
-      .slice(
-        0,
-        1500
-      );
-
-  const categories =
-    template.categories
-      .map(
-        category =>
-          `• **${category.name}** — ${
-            category.visibility ===
-            "private"
-              ? "🔒 privada"
-              : "🌎 pública"
-          }`
-      )
-      .join("\n")
-      .slice(
-        0,
-        1200
-      );
-
-  const channels =
-    template.channels
-      .map(
-        channel =>
-          `• #${channel.name} — ${
-            channel.visibility ===
-            "readonly"
-              ? "📖 somente leitura"
-              : channel.visibility ===
-                  "public"
-                ? "🌎 público"
-                : "🔒 privado"
-          }`
-      )
-      .join("\n")
-      .slice(
-        0,
-        1800
-      );
+        .join('\n')
+    : 'Nenhum canal configurado.';
 
   return new EmbedBuilder()
     .setTitle(
-      "🔎 Prévia do servidor"
+      '🛠️ Construtor de Servidor'
     )
     .setDescription(
-      `**Servidor:** ${template.server.name}\n\n` +
-      `🎭 **Cargos**\n${roles || "Nenhum"}\n\n` +
-      `📁 **Categorias**\n${categories || "Nenhuma"}\n\n` +
-      `💬 **Canais**\n${channels || "Nenhum"}`
+      'Configure o servidor por partes. **Você não precisa escrever um prompt gigante.**\n\n' +
+      'A IA é opcional: ela serve para sugerir uma configuração, enquanto o painel manual permite controlar exatamente cargos, canais e permissões.'
+    )
+    .addFields(
+      {
+        name:
+          `👑 Cargos (${state.roles.length})`,
+        value:
+          roles.slice(0, 1024)
+      },
+      {
+        name:
+          `📁 Categorias (${state.categories.length})`,
+        value:
+          categories.slice(0, 1024)
+      },
+      {
+        name:
+          `💬 Canais (${state.channels.length})`,
+        value:
+          channels.slice(0, 1024)
+      },
+      {
+        name: '✨ Personalização',
+        value:
+          state.personalize
+            ? 'Ativada'
+            : 'Desativada',
+        inline: true
+      },
+      {
+        name:
+          '🧹 Limpar estrutura atual',
+        value:
+          state.cleanFirst
+            ? 'Sim'
+            : 'Não',
+        inline: true
+      }
     )
     .setFooter({
       text:
-        "Confira antes de criar."
+        `${guild.name} • rascunho temporário`
     });
 }
 
-/* =========================================================
-   PAINEL
-========================================================= */
-
-function buildPanel() {
-  const embed =
-    new EmbedBuilder()
-      .setTitle(
-        "🤖 Criador Inteligente de Servidores"
-      )
-      .setDescription(
-        "Descreva o servidor do jeito que você fala normalmente.\n\n" +
-        "🚀 **Criar Servidor**\n" +
-        "🎚️ **Níveis**\n" +
-        "📖 **Tutorial**\n" +
-        "📋 **Modelo**\n" +
-        "⚙️ **Administrar**\n" +
-        "📊 **Status**"
-      )
-      .setFooter({
-        text:
-          "Painel privado • somente administradores"
-      });
-
-  const row1 =
+function panelRows() {
+  return [
     new ActionRowBuilder()
       .addComponents(
         new ButtonBuilder()
           .setCustomId(
-            "create"
+            'builder_role_new'
           )
           .setLabel(
-            "Criar Servidor"
+            'Novo cargo'
           )
-          .setEmoji("🚀")
-          .setStyle(
-            ButtonStyle.Success
-          ),
-
-        new ButtonBuilder()
-          .setCustomId(
-            "levels"
-          )
-          .setLabel(
-            "Níveis"
-          )
-          .setEmoji("🎚️")
+          .setEmoji('👑')
           .setStyle(
             ButtonStyle.Primary
           ),
 
         new ButtonBuilder()
           .setCustomId(
-            "tutorial"
+            'builder_category_new'
           )
           .setLabel(
-            "Tutorial"
+            'Nova categoria'
           )
-          .setEmoji("📖")
+          .setEmoji('📁')
           .setStyle(
-            ButtonStyle.Secondary
-          )
-      );
+            ButtonStyle.Primary
+          ),
 
-  const row2 =
+        new ButtonBuilder()
+          .setCustomId(
+            'builder_channel_new'
+          )
+          .setLabel(
+            'Novo canal'
+          )
+          .setEmoji('💬')
+          .setStyle(
+            ButtonStyle.Primary
+          )
+      ),
+
     new ActionRowBuilder()
       .addComponents(
         new ButtonBuilder()
           .setCustomId(
-            "model"
+            'builder_personalize'
           )
           .setLabel(
-            "Modelo"
+            'Personalização'
           )
-          .setEmoji("📋")
+          .setEmoji('✨')
           .setStyle(
             ButtonStyle.Secondary
           ),
 
         new ButtonBuilder()
           .setCustomId(
-            "admin"
+            'builder_clean'
           )
           .setLabel(
-            "Administrar"
+            'Limpeza'
           )
-          .setEmoji("⚙️")
+          .setEmoji('🧹')
           .setStyle(
             ButtonStyle.Secondary
           ),
 
         new ButtonBuilder()
           .setCustomId(
-            "status"
+            'builder_ai'
           )
           .setLabel(
-            "Status"
+            'Assistente'
           )
-          .setEmoji("📊")
+          .setEmoji('🧠')
+          .setStyle(
+            ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            'builder_preview'
+          )
+          .setLabel(
+            'Prévia'
+          )
+          .setEmoji('👁️')
           .setStyle(
             ButtonStyle.Secondary
           )
-      );
+      ),
 
-  return {
-    embeds: [embed],
-    components: [
-      row1,
-      row2
-    ],
-    flags:
-      MessageFlags.Ephemeral
-  };
-}
-
-/* =========================================================
-   MODAL
-========================================================= */
-
-function buildModal() {
-  const modal =
-    new ModalBuilder()
-      .setCustomId(
-        "create_modal"
-      )
-      .setTitle(
-        "🚀 Criar servidor"
-      );
-
-  const input =
-    new TextInputBuilder()
-      .setCustomId(
-        "description"
-      )
-      .setLabel(
-        "Descreva seu servidor"
-      )
-      .setStyle(
-        TextInputStyle.Paragraph
-      )
-      .setRequired(true)
-      .setMaxLength(
-        MAX_DESCRIPTION_LENGTH
-      )
-      .setPlaceholder(
-        "Ex.: comunidade de futebol, Dono nível 5, Mod nível 3, categoria admin privada..."
-      );
-
-  modal.addComponents(
     new ActionRowBuilder()
       .addComponents(
-        input
-      )
-  );
+        new ButtonBuilder()
+          .setCustomId(
+            'builder_create'
+          )
+          .setLabel(
+            'Criar servidor'
+          )
+          .setEmoji('🚀')
+          .setStyle(
+            ButtonStyle.Success
+          ),
 
-  return modal;
+        new ButtonBuilder()
+          .setCustomId(
+            'builder_cancel'
+          )
+          .setLabel(
+            'Cancelar'
+          )
+          .setEmoji('✖️')
+          .setStyle(
+            ButtonStyle.Danger
+          )
+      )
+  ];
 }
 
-/* =========================================================
-   RESPOSTA PRIVADA
-========================================================= */
-
-function privateReply(
+async function showBuilder(
   interaction,
-  data
+  state
 ) {
-  return interaction.reply({
-    ...data,
-    flags:
-      MessageFlags.Ephemeral
+  return interaction.editReply({
+    embeds: [
+      panelEmbed(
+        interaction.guild,
+        state
+      )
+    ],
+    components:
+      panelRows()
   });
 }
 
-/* =========================================================
-   COMANDO
-========================================================= */
+// ============================================================
+// MODAIS
+// ============================================================
+
+function modalText(
+  id,
+  label,
+  placeholder,
+  value = '',
+  required = true,
+  maxLength = 100
+) {
+  return new TextInputBuilder()
+    .setCustomId(id)
+    .setLabel(label)
+    .setStyle(
+      TextInputStyle.Short
+    )
+    .setPlaceholder(
+      placeholder
+    )
+    .setRequired(
+      required
+    )
+    .setMaxLength(
+      maxLength
+    )
+    .setValue(
+      String(value || '')
+        .slice(0, maxLength)
+    );
+}
+
+function modalParagraph(
+  id,
+  label,
+  placeholder,
+  value = '',
+  required = false,
+  maxLength = 1000
+) {
+  return new TextInputBuilder()
+    .setCustomId(id)
+    .setLabel(label)
+    .setStyle(
+      TextInputStyle.Paragraph
+    )
+    .setPlaceholder(
+      placeholder
+    )
+    .setRequired(
+      required
+    )
+    .setMaxLength(
+      maxLength
+    )
+    .setValue(
+      String(value || '')
+        .slice(0, maxLength)
+    );
+}
+
+function roleModal() {
+  return new ModalBuilder()
+    .setCustomId(
+      'modal_role'
+    )
+    .setTitle(
+      '👑 Novo cargo'
+    )
+    .addComponents(
+      new ActionRowBuilder()
+        .addComponents(
+          modalText(
+            'name',
+            'Nome do cargo',
+            'Ex.: Dono'
+          )
+        ),
+
+      new ActionRowBuilder()
+        .addComponents(
+          modalText(
+            'level',
+            'Nível (1 a 5)',
+            'Ex.: 4'
+          )
+        ),
+
+      new ActionRowBuilder()
+        .addComponents(
+          modalParagraph(
+            'permissions',
+            'Permissões / exceções',
+            'Ex.: todas as permissões menos banir'
+          )
+        ),
+
+      new ActionRowBuilder()
+        .addComponents(
+          modalText(
+            'color',
+            'Cor opcional',
+            'Ex.: #5865F2',
+            '',
+            false,
+            7
+          )
+        )
+    );
+}
+
+function categoryModal() {
+  return new ModalBuilder()
+    .setCustomId(
+      'modal_category'
+    )
+    .setTitle(
+      '📁 Nova categoria'
+    )
+    .addComponents(
+      new ActionRowBuilder()
+        .addComponents(
+          modalText(
+            'name',
+            'Nome da categoria',
+            'Ex.: STAFF'
+          )
+        ),
+
+      new ActionRowBuilder()
+        .addComponents(
+          modalText(
+            'visibility',
+            'Visibilidade',
+            'publico ou privado'
+          )
+        )
+    );
+}
+
+function channelModal(state) {
+  const defaultCategory =
+    state.categories[0]?.name ||
+    '';
+
+  return new ModalBuilder()
+    .setCustomId(
+      'modal_channel'
+    )
+    .setTitle(
+      '💬 Novo canal'
+    )
+    .addComponents(
+      new ActionRowBuilder()
+        .addComponents(
+          modalText(
+            'name',
+            'Nome do canal',
+            'Ex.: avisos-staff'
+          )
+        ),
+
+      new ActionRowBuilder()
+        .addComponents(
+          modalText(
+            'type',
+            'Tipo',
+            'texto, voz ou anuncios'
+          )
+        ),
+
+      new ActionRowBuilder()
+        .addComponents(
+          modalText(
+            'category',
+            'Categoria (opcional)',
+            'Ex.: STAFF',
+            defaultCategory,
+            false
+          )
+        ),
+
+      new ActionRowBuilder()
+        .addComponents(
+          modalText(
+            'personalize',
+            'Personalizar?',
+            'sim ou nao',
+            state.personalize
+              ? 'sim'
+              : 'nao',
+            false,
+            3
+          )
+        )
+    );
+}
+
+function aiModal() {
+  return new ModalBuilder()
+    .setCustomId(
+      'modal_ai'
+    )
+    .setTitle(
+      '🧠 Assistente de configuração'
+    )
+    .addComponents(
+      new ActionRowBuilder()
+        .addComponents(
+          modalParagraph(
+            'description',
+            'Descreva uma coisa por vez',
+            'Ex.: cria uma call chamada Alta Cúpula, privada, só Admin entra',
+            '',
+            true,
+            1500
+          )
+        )
+    );
+}
+
+// ============================================================
+// PERSONALIZAÇÃO
+// ============================================================
+
+function personalizeChannelName(
+  name,
+  type,
+  enabled
+) {
+  if (!enabled) {
+    return cleanName(name);
+  }
+
+  const raw = cleanName(name);
+
+  if (
+    /^[\p{Extended_Pictographic}]/u
+      .test(raw)
+  ) {
+    return raw;
+  }
+
+  if (type === 'voice') {
+    return `🔊・${raw}`.slice(
+      0,
+      100
+    );
+  }
+
+  if (type === 'announcement') {
+    return `📢・${raw}`.slice(
+      0,
+      100
+    );
+  }
+
+  return `💬・${raw}`.slice(
+    0,
+    100
+  );
+}
+
+// ============================================================
+// ASSISTENTE CONTROLADO
+// ============================================================
+
+function interpretSingleRequest(
+  text,
+  state
+) {
+  const n = normalize(text);
+
+  // ----------------------------------------------------------
+  // CARGO
+  // ----------------------------------------------------------
+
+  if (
+    /(cargo|role)/.test(n)
+  ) {
+    const match =
+      text.match(
+        /(?:cargo|role)\s+(?:chamado|nome)?\s*[:=-]?\s*([\p{L}\p{N} _-]{2,60})/iu
+      );
+
+    const name =
+      match?.[1]?.trim() ||
+      text
+        .replace(
+          /.*?(?:cargo|role)/iu,
+          ''
+        )
+        .trim()
+        .slice(
+          0,
+          60
+        ) ||
+      'Novo cargo';
+
+    const level =
+      parseLevel(text) ||
+      1;
+
+    const permissions =
+      permissionsForLevel(
+        level,
+        text
+      );
+
+    const colorMatch =
+      text.match(
+        /#[0-9a-fA-F]{6}/
+      );
+
+    state.roles.push({
+      name:
+        cleanName(name),
+      level,
+      permissions,
+      color:
+        colorMatch
+          ? colorMatch[0]
+          : null
+    });
+
+    return (
+      `👑 Cargo **${cleanName(name)}** adicionado no nível ${level}.`
+    );
+  }
+
+  // ----------------------------------------------------------
+  // CANAL
+  // ----------------------------------------------------------
+
+  if (
+    /(canal|call|chat|sala)/.test(n)
+  ) {
+    const voice =
+      /(call|voz|voice)/.test(n);
+
+    const announcement =
+      /(aviso|anuncio|announcements?)/.test(n);
+
+    let name = null;
+
+    const named =
+      text.match(
+        /(?:chamado|nome)\s+["“]?([^"”]+?)["”]?(?:,|\.|$)/iu
+      );
+
+    if (named?.[1]) {
+      name =
+        named[1].trim();
+    }
+
+    if (!name) {
+      const after =
+        text.match(
+          /(?:canal|call|chat|sala)\s+(?:de\s+)?(.+)/iu
+        );
+
+      name =
+        after?.[1]
+          ?.split(',')[0]
+          ?.trim() ||
+        'novo-canal';
+    }
+
+    let category = null;
+
+    const cat =
+      text.match(
+        /categoria\s+([\p{L}\p{N} _-]+)/iu
+      );
+
+    if (cat?.[1]) {
+      category =
+        cat[1].trim();
+    }
+
+    const privateChannel =
+      /(privad[oa]|so admin|só admin|somente admin)/.test(n);
+
+    const readonly =
+      /(somente leitura|so leitura|só leitura|ninguem pode enviar|ninguém pode enviar)/.test(n);
+
+    const personalize =
+      !/(sem personaliza|nao personaliza|não personaliza)/.test(n);
+
+    state.channels.push({
+      name:
+        cleanName(name),
+
+      type:
+        voice
+          ? 'voice'
+          : announcement
+            ? 'announcement'
+            : 'text',
+
+      category,
+
+      personalize,
+
+      private:
+        privateChannel,
+
+      readonly,
+
+      denyViewRoles: [],
+
+      denySendRoles: []
+    });
+
+    return (
+      `💬 Canal **${cleanName(name)}** adicionado. Agora você pode abrir a configuração dele e escolher exatamente quais cargos não podem ver ou enviar mensagens.`
+    );
+  }
+
+  return (
+    '⚠️ Não adicionei nada automaticamente. Para evitar erros, use o painel **Novo cargo**, **Nova categoria** ou **Novo canal** e configure manualmente.'
+  );
+}
+
+// ============================================================
+// PERMISSÕES DE CATEGORIA / CANAL
+// ============================================================
+
+function overwrite(
+  id,
+  allow = [],
+  deny = []
+) {
+  return {
+    id,
+    allow:
+      unique(allow),
+    deny:
+      unique(deny)
+  };
+}
+
+function buildCategoryOverwrites(
+  guild,
+  categoryConfig,
+  roleMap
+) {
+  const overwrites = [];
+
+  if (
+    categoryConfig.private
+  ) {
+    overwrites.push(
+      overwrite(
+        guild.roles.everyone.id,
+        [],
+        [P.ViewChannel]
+      )
+    );
+
+    for (
+      const role of roleMap.values()
+    ) {
+      if (
+        role.permissions.has(
+          P.Administrator
+        ) ||
+        role.permissions.has(
+          P.ManageGuild
+        )
+      ) {
+        overwrites.push(
+          overwrite(
+            role.id,
+            [P.ViewChannel]
+          )
+        );
+      }
+    }
+  } else {
+    overwrites.push(
+      overwrite(
+        guild.roles.everyone.id,
+        [P.ViewChannel]
+      )
+    );
+  }
+
+  return overwrites;
+}
+
+function buildChannelOverwrites(
+  guild,
+  config,
+  roleMap
+) {
+  const overwrites = [];
+
+  const denyView =
+    new Set(
+      config.denyViewRoles || []
+    );
+
+  const denySend =
+    new Set(
+      config.denySendRoles || []
+    );
+
+  const everyoneDeny = [];
+
+  const everyoneAllow = [
+    P.ViewChannel
+  ];
+
+  if (
+    config.private
+  ) {
+    everyoneDeny.push(
+      P.ViewChannel
+    );
+  }
+
+  if (
+    config.readonly &&
+    config.type !== 'voice'
+  ) {
+    everyoneDeny.push(
+      P.SendMessages
+    );
+  }
+
+  overwrites.push(
+    overwrite(
+      guild.roles.everyone.id,
+      everyoneAllow,
+      everyoneDeny
+    )
+  );
+
+  for (
+    const roleName of denyView
+  ) {
+    const role =
+      roleMap.get(
+        normalize(roleName)
+      );
+
+    if (role) {
+      overwrites.push(
+        overwrite(
+          role.id,
+          [],
+          [P.ViewChannel]
+        )
+      );
+    }
+  }
+
+  for (
+    const roleName of denySend
+  ) {
+    const role =
+      roleMap.get(
+        normalize(roleName)
+      );
+
+    if (role) {
+      overwrites.push(
+        overwrite(
+          role.id,
+          [P.ViewChannel],
+          [P.SendMessages]
+        )
+      );
+    }
+  }
+
+  return overwrites;
+}
+
+// ============================================================
+// DISCORD: APLICAÇÃO
+// ============================================================
+
+async function ensureBotPermissions(
+  guild
+) {
+  const me =
+    guild.members.me ||
+    await guild.members.fetchMe();
+
+  const required = [
+    P.ManageChannels,
+    P.ManageRoles
+  ];
+
+  const missing =
+    required.filter(
+      permission =>
+        !me.permissions.has(
+          permission
+        )
+    );
+
+  if (missing.length) {
+    throw new Error(
+      'O bot precisa de **Gerenciar Canais** e **Gerenciar Cargos**.'
+    );
+  }
+
+  return me;
+}
+
+async function cleanupGuildStructure(
+  guild
+) {
+  const channels =
+    [
+      ...guild.channels.cache.values()
+    ];
+
+  for (
+    const channel of channels
+  ) {
+    try {
+      await channel.delete(
+        'Limpeza solicitada pelo construtor de servidor'
+      );
+    } catch (error) {
+      console.warn(
+        `⚠️ Não consegui excluir canal ${channel.name}: ${error.message}`
+      );
+    }
+  }
+}
+
+async function applyRoles(
+  guild,
+  state
+) {
+  const roleMap =
+    new Map();
+
+  const sorted =
+    [...state.roles]
+      .sort(
+        (a, b) =>
+          a.level - b.level
+      );
+
+  for (
+    const config of sorted
+  ) {
+    let role =
+      roleByName(
+        guild,
+        config.name
+      );
+
+    const permissions =
+      new PermissionsBitField(
+        config.permissions || []
+      );
+
+    const edit = {
+      permissions
+    };
+
+    const color =
+      hexToInt(
+        config.color
+      );
+
+    if (color !== null) {
+      edit.color =
+        color;
+    }
+
+    if (!role) {
+      role =
+        await guild.roles.create({
+          name:
+            cleanName(
+              config.name
+            ),
+
+          permissions,
+
+          color:
+            color === null
+              ? undefined
+              : color,
+
+          reason:
+            'Construtor de servidor'
+        });
+    } else if (
+      !role.managed
+    ) {
+      await role.edit(
+        edit,
+        'Atualização pelo construtor de servidor'
+      );
+    }
+
+    roleMap.set(
+      normalize(config.name),
+      role
+    );
+  }
+
+  const me =
+    guild.members.me ||
+    await guild.members.fetchMe();
+
+  const positions = [];
+
+  for (
+    const config of sorted
+  ) {
+    const role =
+      roleMap.get(
+        normalize(
+          config.name
+        )
+      );
+
+    if (
+      !role ||
+      role.managed
+    ) {
+      continue;
+    }
+
+    if (
+      role.position >=
+      me.roles.highest.position
+    ) {
+      console.warn(
+        `⚠️ Não posso mover o cargo ${role.name}: ele está acima ou no mesmo nível do maior cargo do bot.`
+      );
+
+      continue;
+    }
+
+    positions.push({
+      role:
+        role.id,
+
+      position:
+        Math.max(
+          1,
+          config.level
+        )
+    });
+  }
+
+  if (
+    positions.length
+  ) {
+    await guild.roles
+      .setPositions(
+        positions
+      )
+      .catch(
+        error => {
+          console.warn(
+            `⚠️ Não foi possível ajustar toda a hierarquia: ${error.message}`
+          );
+        }
+      );
+  }
+
+  return roleMap;
+}
+
+async function applyCategories(
+  guild,
+  state,
+  roleMap
+) {
+  const categoryMap =
+    new Map();
+
+  for (
+    let i = 0;
+    i < state.categories.length;
+    i++
+  ) {
+    const config =
+      state.categories[i];
+
+    let category =
+      categoryByName(
+        guild,
+        config.name
+      );
+
+    const overwrites =
+      buildCategoryOverwrites(
+        guild,
+        config,
+        roleMap
+      );
+
+    if (!category) {
+      category =
+        await guild.channels.create({
+          name:
+            cleanName(
+              config.name
+            ),
+
+          type:
+            ChannelType.GuildCategory,
+
+          permissionOverwrites:
+            overwrites,
+
+          reason:
+            'Construtor de servidor'
+        });
+    } else {
+      await category.edit(
+        {
+          permissionOverwrites:
+            overwrites,
+
+          position:
+            i
+        },
+        'Atualização pelo construtor de servidor'
+      );
+    }
+
+    categoryMap.set(
+      normalize(
+        config.name
+      ),
+      category
+    );
+  }
+
+  return categoryMap;
+}
+
+function discordChannelType(
+  type
+) {
+  if (
+    type === 'voice'
+  ) {
+    return ChannelType.GuildVoice;
+  }
+
+  if (
+    type === 'announcement'
+  ) {
+    return ChannelType.GuildAnnouncement;
+  }
+
+  return ChannelType.GuildText;
+}
+
+async function applyChannels(
+  guild,
+  state,
+  categoryMap,
+  roleMap
+) {
+  for (
+    let i = 0;
+    i < state.channels.length;
+    i++
+  ) {
+    const config =
+      state.channels[i];
+
+    const type =
+      discordChannelType(
+        config.type
+      );
+
+    const displayName =
+      personalizeChannelName(
+        config.name,
+        config.type,
+        config.personalize
+      );
+
+    const parent =
+      config.category
+        ? categoryMap.get(
+            normalize(
+              config.category
+            )
+          )
+        : null;
+
+    const overwrites =
+      buildChannelOverwrites(
+        guild,
+        config,
+        roleMap
+      );
+
+    let channel =
+      channelByNameAndType(
+        guild,
+        displayName,
+        type
+      );
+
+    const edit = {
+      name:
+        displayName,
+
+      permissionOverwrites:
+        overwrites,
+
+      position:
+        i,
+
+      parent:
+        parent?.id || null
+    };
+
+    if (!channel) {
+      channel =
+        await guild.channels.create({
+          name:
+            displayName,
+
+          type,
+
+          parent:
+            parent?.id,
+
+          permissionOverwrites:
+            overwrites,
+
+          reason:
+            'Construtor de servidor'
+        });
+    } else {
+      await channel.edit(
+        edit,
+        'Atualização pelo construtor de servidor'
+      );
+    }
+  }
+}
+
+async function applyTemplate(
+  guild,
+  state
+) {
+  await ensureBotPermissions(
+    guild
+  );
+
+  if (
+    !state.roles.length &&
+    !state.categories.length &&
+    !state.channels.length
+  ) {
+    throw new Error(
+      'O rascunho está vazio. Crie pelo menos um cargo, categoria ou canal.'
+    );
+  }
+
+  if (
+    state.cleanFirst
+  ) {
+    await cleanupGuildStructure(
+      guild
+    );
+  }
+
+  const roleMap =
+    await applyRoles(
+      guild,
+      state
+    );
+
+  const categoryMap =
+    await applyCategories(
+      guild,
+      state,
+      roleMap
+    );
+
+  await applyChannels(
+    guild,
+    state,
+    categoryMap,
+    roleMap
+  );
+}
+
+// ============================================================
+// PRÉVIA
+// ============================================================
+
+function previewEmbed(
+  state
+) {
+  const roleLines =
+    state.roles.length
+      ? state.roles
+          .map(
+            role =>
+              `👑 **${role.name}** — nível ${role.level} — ${
+                role.permissions.includes(
+                  'Administrator'
+                )
+                  ? 'Administrator'
+                  : `${role.permissions.length} permissões`
+              }`
+          )
+          .join('\n')
+      : 'Nenhum.';
+
+  const categoryLines =
+    state.categories.length
+      ? state.categories
+          .map(
+            category =>
+              `📁 **${category.name}** — ${
+                category.private
+                  ? '🔒 privado'
+                  : '🌎 público'
+              }`
+          )
+          .join('\n')
+      : 'Nenhuma.';
+
+  const channelLines =
+    state.channels.length
+      ? state.channels
+          .map(channel => {
+            const type =
+              channel.type ===
+              'voice'
+                ? '🔊 voz'
+                : channel.type ===
+                  'announcement'
+                  ? '📢 anúncios'
+                  : '💬 texto';
+
+            const view =
+              channel.private ||
+              channel.denyViewRoles?.length
+                ? `não veem: ${
+                    (
+                      channel.denyViewRoles ||
+                      []
+                    ).join(', ') ||
+                    'padrão'
+                  }`
+                : 'visibilidade padrão';
+
+            const send =
+              channel.readonly ||
+              channel.denySendRoles?.length
+                ? `não enviam: ${
+                    (
+                      channel.denySendRoles ||
+                      []
+                    ).join(', ') ||
+                    'padrão'
+                  }`
+                : 'envio padrão';
+
+            return (
+              `${type} **${channel.name}**` +
+              (
+                channel.category
+                  ? ` → ${channel.category}`
+                  : ''
+              ) +
+              `\n↳ ${view} • ${send}`
+            );
+          })
+          .join('\n\n')
+      : 'Nenhum.';
+
+  return new EmbedBuilder()
+    .setTitle(
+      '👁️ Prévia do servidor'
+    )
+    .setDescription(
+      'Nada será alterado no servidor enquanto você não clicar em **🚀 Criar servidor**.'
+    )
+    .addFields(
+      {
+        name:
+          '👑 CARGOS',
+        value:
+          roleLines.slice(
+            0,
+            1024
+          )
+      },
+
+      {
+        name:
+          '📁 CATEGORIAS',
+        value:
+          categoryLines.slice(
+            0,
+            1024
+          )
+      },
+
+      {
+        name:
+          '💬 CANAIS',
+        value:
+          channelLines.slice(
+            0,
+            1024
+          )
+      },
+
+      {
+        name:
+          '🧹 Limpeza',
+        value:
+          state.cleanFirst
+            ? 'ATIVADA — canais/categorias atuais serão excluídos.'
+            : 'Desativada.'
+      },
+
+      {
+        name:
+          '✨ Personalização padrão',
+        value:
+          state.personalize
+            ? 'Ativada'
+            : 'Desativada'
+      }
+    );
+}
+
+// ============================================================
+// CONFIGURAÇÃO DE CANAL
+// ============================================================
+
+function channelConfigEmbed(
+  config
+) {
+  const view =
+    config.denyViewRoles?.length
+      ? config.denyViewRoles
+          .map(
+            role =>
+              `• ${role}`
+          )
+          .join('\n')
+      : 'Nenhum cargo bloqueado.';
+
+  const send =
+    config.denySendRoles?.length
+      ? config.denySendRoles
+          .map(
+            role =>
+              `• ${role}`
+          )
+          .join('\n')
+      : 'Nenhum cargo bloqueado.';
+
+  return new EmbedBuilder()
+    .setTitle(
+      `⚙️ Configurando: ${config.name}`
+    )
+    .setDescription(
+      '**Somente os cargos listados aqui recebem bloqueios.**\n' +
+      'Quem não estiver listado continua com a permissão normal.'
+    )
+    .addFields(
+      {
+        name:
+          '👁️ NÃO PODEM VER',
+        value:
+          view.slice(
+            0,
+            1024
+          )
+      },
+
+      {
+        name:
+          '✍️ NÃO PODEM ENVIAR',
+        value:
+          send.slice(
+            0,
+            1024
+          )
+      },
+
+      {
+        name:
+          '📖 Somente leitura',
+        value:
+          config.readonly
+            ? 'Ativado'
+            : 'Desativado',
+        inline: true
+      },
+
+      {
+        name:
+          '✨ Personalização',
+        value:
+          config.personalize
+            ? 'Ativada'
+            : 'Desativada',
+        inline: true
+      },
+
+      {
+        name:
+          '📁 Categoria',
+        value:
+          config.category ||
+          'Sem categoria',
+        inline: true
+      }
+    );
+}
+
+function channelConfigRows() {
+  return [
+    new ActionRowBuilder()
+      .addComponents(
+        new RoleSelectMenuBuilder()
+          .setCustomId(
+            'channel_deny_view_select'
+          )
+          .setPlaceholder(
+            'Selecionar cargos que NÃO podem ver'
+          )
+          .setMinValues(0)
+          .setMaxValues(25)
+      ),
+
+    new ActionRowBuilder()
+      .addComponents(
+        new RoleSelectMenuBuilder()
+          .setCustomId(
+            'channel_deny_send_select'
+          )
+          .setPlaceholder(
+            'Selecionar cargos que NÃO podem enviar'
+          )
+          .setMinValues(0)
+          .setMaxValues(25)
+      ),
+
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            'channel_readonly'
+          )
+          .setLabel(
+            'Somente leitura'
+          )
+          .setEmoji('📖')
+          .setStyle(
+            ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            'channel_personalize'
+          )
+          .setLabel(
+            'Personalização'
+          )
+          .setEmoji('✨')
+          .setStyle(
+            ButtonStyle.Secondary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            'channel_clear_rules'
+          )
+          .setLabel(
+            'Limpar bloqueios'
+          )
+          .setEmoji('🧹')
+          .setStyle(
+            ButtonStyle.Danger
+          )
+      ),
+
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            'channel_save'
+          )
+          .setLabel(
+            'Salvar canal'
+          )
+          .setEmoji('💾')
+          .setStyle(
+            ButtonStyle.Success
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            'channel_cancel'
+          )
+          .setLabel(
+            'Cancelar'
+          )
+          .setEmoji('✖️')
+          .setStyle(
+            ButtonStyle.Danger
+          )
+      )
+  ];
+}
+
+async function showChannelConfig(
+  interaction,
+  config
+) {
+  return interaction.editReply({
+    embeds: [
+      channelConfigEmbed(
+        config
+      )
+    ],
+    components:
+      channelConfigRows()
+  });
+}
+
+// ============================================================
+// STATUS
+// ============================================================
+
+function statusEmbed(
+  guild
+) {
+  const roles =
+    guild.roles.cache.filter(
+      role =>
+        !role.managed &&
+        role.id !== guild.id
+    ).size;
+
+  const categories =
+    guild.channels.cache.filter(
+      channel =>
+        channel.type ===
+        ChannelType.GuildCategory
+    ).size;
+
+  const channels =
+    guild.channels.cache.filter(
+      channel =>
+        channel.type !==
+        ChannelType.GuildCategory
+    ).size;
+
+  return new EmbedBuilder()
+    .setTitle(
+      '📊 Status do servidor'
+    )
+    .addFields(
+      {
+        name:
+          '👥 Membros',
+        value:
+          String(
+            guild.memberCount
+          ),
+        inline: true
+      },
+
+      {
+        name:
+          '👑 Cargos',
+        value:
+          String(roles),
+        inline: true
+      },
+
+      {
+        name:
+          '📁 Categorias',
+        value:
+          String(categories),
+        inline: true
+      },
+
+      {
+        name:
+          '💬 Canais',
+        value:
+          String(channels),
+        inline: true
+      }
+    );
+}
+
+// ============================================================
+// COMANDO /PAINEL
+// ============================================================
 
 const painelCommand =
   new SlashCommandBuilder()
-    .setName("painel")
+    .setName(
+      'painel'
+    )
     .setDescription(
-      "Abrir o painel do Criador Inteligente"
+      'Abrir o construtor de servidor'
     )
     .setDefaultMemberPermissions(
-      P.Administrator
+      P.Administrator.toString()
     );
 
-/* =========================================================
-   BOT ONLINE
-========================================================= */
+async function openPanel(
+  interaction
+) {
+  if (
+    !await requireAdmin(
+      interaction
+    )
+  ) {
+    return;
+  }
+
+  const state =
+    getBuilder(
+      interaction.guild.id,
+      interaction.user.id
+    );
+
+  await interaction.reply(
+    ephemeralPayload({
+      embeds: [
+        panelEmbed(
+          interaction.guild,
+          state
+        )
+      ],
+      components:
+        panelRows()
+    })
+  );
+}
+
+// ============================================================
+// INTERAÇÕES
+// ============================================================
+
+client.on(
+  'interactionCreate',
+  async interaction => {
+    try {
+      if (
+        interaction.isChatInputCommand()
+      ) {
+        if (
+          interaction.commandName ===
+          'painel'
+        ) {
+          await openPanel(
+            interaction
+          );
+        }
+
+        return;
+      }
+
+      if (
+        !interaction.guild
+      ) {
+        return;
+      }
+
+      if (
+        !await requireAdmin(
+          interaction
+        )
+      ) {
+        return;
+      }
+
+      const state =
+        getBuilder(
+          interaction.guild.id,
+          interaction.user.id
+        );
+
+      // ========================================================
+      // BOTÕES
+      // ========================================================
+
+      if (
+        interaction.isButton()
+      ) {
+        switch (
+          interaction.customId
+        ) {
+          case 'builder_role_new':
+            await interaction.showModal(
+              roleModal()
+            );
+            return;
+
+          case 'builder_category_new':
+            await interaction.showModal(
+              categoryModal()
+            );
+            return;
+
+          case 'builder_channel_new':
+            await interaction.showModal(
+              channelModal(state)
+            );
+            return;
+
+          case 'builder_personalize':
+            state.personalize =
+              !state.personalize;
+
+            saveBuilder(
+              interaction.guild.id,
+              interaction.user.id,
+              state
+            );
+
+            await showBuilder(
+              interaction,
+              state
+            );
+
+            return;
+
+          case 'builder_clean':
+            state.cleanFirst =
+              !state.cleanFirst;
+
+            saveBuilder(
+              interaction.guild.id,
+              interaction.user.id,
+              state
+            );
+
+            await showBuilder(
+              interaction,
+              state
+            );
+
+            return;
+
+          case 'builder_ai':
+            await interaction.showModal(
+              aiModal()
+            );
+
+            return;
+
+          case 'builder_preview':
+            await interaction.editReply({
+              embeds: [
+                previewEmbed(
+                  state
+                )
+              ],
+
+              components: [
+                new ActionRowBuilder()
+                  .addComponents(
+                    new ButtonBuilder()
+                      .setCustomId(
+                        'builder_back'
+                      )
+                      .setLabel(
+                        'Voltar'
+                      )
+                      .setEmoji('↩️')
+                      .setStyle(
+                        ButtonStyle.Secondary
+                      ),
+
+                    new ButtonBuilder()
+                      .setCustomId(
+                        'builder_create'
+                      )
+                      .setLabel(
+                        'Criar servidor'
+                      )
+                      .setEmoji('🚀')
+                      .setStyle(
+                        ButtonStyle.Success
+                      )
+                  )
+              ]
+            });
+
+            return;
+
+          case 'builder_back':
+            await showBuilder(
+              interaction,
+              state
+            );
+
+            return;
+
+          case 'builder_cancel':
+            clearBuilder(
+              interaction.guild.id,
+              interaction.user.id
+            );
+
+            await interaction.update({
+              content:
+                '🗑️ Rascunho cancelado.',
+              embeds: [],
+              components: []
+            });
+
+            return;
+
+          case 'builder_create': {
+            if (
+              !state.roles.length &&
+              !state.categories.length &&
+              !state.channels.length
+            ) {
+              await interaction.reply(
+                ephemeralPayload({
+                  content:
+                    '❌ Adicione pelo menos um cargo, categoria ou canal antes de criar.'
+                })
+              );
+
+              return;
+            }
+
+            await interaction.update({
+              content:
+                '⏳ Aplicando configuração no servidor...',
+              embeds: [],
+              components: []
+            });
+
+            try {
+              await applyTemplate(
+                interaction.guild,
+                state
+              );
+
+              clearBuilder(
+                interaction.guild.id,
+                interaction.user.id
+              );
+
+              await interaction.editReply({
+                content:
+                  '✅ **Servidor configurado com sucesso!**\n\n' +
+                  'Os cargos, categorias, canais e bloqueios definidos no construtor foram aplicados.',
+                embeds: [],
+                components: []
+              });
+            } catch (error) {
+              console.error(
+                '❌ Erro ao criar servidor:',
+                error
+              );
+
+              await interaction.editReply({
+                content:
+                  `❌ **Não foi possível concluir.**\n\n${String(
+                    error.message ||
+                    error
+                  ).slice(
+                    0,
+                    1500
+                  )}`,
+
+                embeds: [],
+
+                components: [
+                  new ActionRowBuilder()
+                    .addComponents(
+                      new ButtonBuilder()
+                        .setCustomId(
+                          'builder_back'
+                        )
+                        .setLabel(
+                          'Voltar ao construtor'
+                        )
+                        .setEmoji('↩️')
+                        .setStyle(
+                          ButtonStyle.Secondary
+                        )
+                    )
+                ]
+              });
+            }
+
+            return;
+          }
+
+          // ======================================================
+          // CONFIGURAÇÃO DO CANAL
+          // ======================================================
+
+          case 'channel_readonly': {
+            if (
+              !state.editingChannel
+            ) {
+              return;
+            }
+
+            state.editingChannel.readonly =
+              !state.editingChannel.readonly;
+
+            saveBuilder(
+              interaction.guild.id,
+              interaction.user.id,
+              state
+            );
+
+            await showChannelConfig(
+              interaction,
+              state.editingChannel
+            );
+
+            return;
+          }
+
+          case 'channel_personalize': {
+            if (
+              !state.editingChannel
+            ) {
+              return;
+            }
+
+            state.editingChannel.personalize =
+              !state.editingChannel.personalize;
+
+            saveBuilder(
+              interaction.guild.id,
+              interaction.user.id,
+              state
+            );
+
+            await showChannelConfig(
+              interaction,
+              state.editingChannel
+            );
+
+            return;
+          }
+
+          case 'channel_clear_rules': {
+            if (
+              !state.editingChannel
+            ) {
+              return;
+            }
+
+            state.editingChannel.denyViewRoles =
+              [];
+
+            state.editingChannel.denySendRoles =
+              [];
+
+            state.editingChannel.readonly =
+              false;
+
+            saveBuilder(
+              interaction.guild.id,
+              interaction.user.id,
+              state
+            );
+
+            await showChannelConfig(
+              interaction,
+              state.editingChannel
+            );
+
+            return;
+          }
+
+          case 'channel_save': {
+            if (
+              !state.editingChannel
+            ) {
+              return;
+            }
+
+            state.channels.push({
+              ...state.editingChannel
+            });
+
+            state.editingChannel =
+              null;
+
+            saveBuilder(
+              interaction.guild.id,
+              interaction.user.id,
+              state
+            );
+
+            await showBuilder(
+              interaction,
+              state
+            );
+
+            return;
+          }
+
+          case 'channel_cancel':
+            state.editingChannel =
+              null;
+
+            saveBuilder(
+              interaction.guild.id,
+              interaction.user.id,
+              state
+            );
+
+            await showBuilder(
+              interaction,
+              state
+            );
+
+            return;
+        }
+      }
+
+      // ========================================================
+      // SELECT DE CARGOS
+      // ========================================================
+
+      if (
+        interaction.isRoleSelectMenu()
+      ) {
+        if (
+          !state.editingChannel
+        ) {
+          return;
+        }
+
+        if (
+          interaction.customId ===
+          'channel_deny_view_select'
+        ) {
+          const selected = [];
+
+          for (
+            const id of interaction.values
+          ) {
+            const role =
+              interaction.guild.roles.cache.get(
+                id
+              );
+
+            if (
+              role &&
+              !role.managed
+            ) {
+              selected.push(
+                role.name
+              );
+            }
+          }
+
+          state.editingChannel.denyViewRoles =
+            unique(
+              selected
+            );
+        }
+
+        if (
+          interaction.customId ===
+          'channel_deny_send_select'
+        ) {
+          const selected = [];
+
+          for (
+            const id of interaction.values
+          ) {
+            const role =
+              interaction.guild.roles.cache.get(
+                id
+              );
+
+            if (
+              role &&
+              !role.managed
+            ) {
+              selected.push(
+                role.name
+              );
+            }
+          }
+
+          state.editingChannel.denySendRoles =
+            unique(
+              selected
+            );
+        }
+
+        saveBuilder(
+          interaction.guild.id,
+          interaction.user.id,
+          state
+        );
+
+        await showChannelConfig(
+          interaction,
+          state.editingChannel
+        );
+
+        return;
+      }
+
+      // ========================================================
+      // MODAIS
+      // ========================================================
+
+      if (
+        interaction.isModalSubmit()
+      ) {
+        // ------------------------------------------------------
+        // CARGO
+        // ------------------------------------------------------
+
+        if (
+          interaction.customId ===
+          'modal_role'
+        ) {
+          if (
+            state.roles.length >=
+            MAX_ITEMS
+          ) {
+            await interaction.reply(
+              ephemeralPayload({
+                content:
+                  `❌ Limite de ${MAX_ITEMS} cargos no rascunho.`
+              })
+            );
+
+            return;
+          }
+
+          const name =
+            cleanName(
+              interaction.fields.getTextInputValue(
+                'name'
+              )
+            );
+
+          const level =
+            parseLevel(
+              interaction.fields.getTextInputValue(
+                'level'
+              )
+            ) || 1;
+
+          const description =
+            interaction.fields.getTextInputValue(
+              'permissions'
+            );
+
+          const color =
+            interaction.fields.getTextInputValue(
+              'color'
+            ) || null;
+
+          const permissions =
+            permissionsForLevel(
+              level,
+              description
+            );
+
+          const existing =
+            state.roles.find(
+              role =>
+                normalize(
+                  role.name
+                ) ===
+                normalize(
+                  name
+                )
+            );
+
+          const config = {
+            name,
+            level,
+            permissions,
+            color
+          };
+
+          if (existing) {
+            Object.assign(
+              existing,
+              config
+            );
+          } else {
+            state.roles.push(
+              config
+            );
+          }
+
+          saveBuilder(
+            interaction.guild.id,
+            interaction.user.id,
+            state
+          );
+
+          await interaction.reply(
+            ephemeralPayload({
+              content:
+                `✅ Cargo **${name}** configurado.\n` +
+                `Nível: **${level}**\n` +
+                `Permissões: **${
+                  permissions.includes(
+                    'Administrator'
+                  )
+                    ? 'Administrator'
+                    : permissions.length
+                }**.`
+            })
+          );
+
+          return;
+        }
+
+        // ------------------------------------------------------
+        // CATEGORIA
+        // ------------------------------------------------------
+
+        if (
+          interaction.customId ===
+          'modal_category'
+        ) {
+          if (
+            state.categories.length >=
+            MAX_ITEMS
+          ) {
+            await interaction.reply(
+              ephemeralPayload({
+                content:
+                  `❌ Limite de ${MAX_ITEMS} categorias no rascunho.`
+              })
+            );
+
+            return;
+          }
+
+          const name =
+            cleanName(
+              interaction.fields.getTextInputValue(
+                'name'
+              )
+            );
+
+          const visibility =
+            normalize(
+              interaction.fields.getTextInputValue(
+                'visibility'
+              )
+            );
+
+          const privateCategory =
+            /(privad|somente|so)/.test(
+              visibility
+            ) &&
+            !/(public|públic)/.test(
+              visibility
+            );
+
+          const config = {
+            name,
+            private:
+              privateCategory
+          };
+
+          const existing =
+            state.categories.find(
+              category =>
+                normalize(
+                  category.name
+                ) ===
+                normalize(
+                  name
+                )
+            );
+
+          if (existing) {
+            Object.assign(
+              existing,
+              config
+            );
+          } else {
+            state.categories.push(
+              config
+            );
+          }
+
+          saveBuilder(
+            interaction.guild.id,
+            interaction.user.id,
+            state
+          );
+
+          await interaction.reply(
+            ephemeralPayload({
+              content:
+                `✅ Categoria **${name}** configurada como **${
+                  privateCategory
+                    ? 'privada 🔒'
+                    : 'pública 🌎'
+                }**.`
+            })
+          );
+
+          return;
+        }
+
+        // ------------------------------------------------------
+        // CANAL
+        // ------------------------------------------------------
+
+        if (
+          interaction.customId ===
+          'modal_channel'
+        ) {
+          const name =
+            cleanName(
+              interaction.fields.getTextInputValue(
+                'name'
+              )
+            );
+
+          const typeText =
+            normalize(
+              interaction.fields.getTextInputValue(
+                'type'
+              )
+            );
+
+          const category =
+            interaction.fields
+              .getTextInputValue(
+                'category'
+              )
+              .trim() ||
+            null;
+
+          const personalizationText =
+            normalize(
+              interaction.fields.getTextInputValue(
+                'personalize'
+              )
+            );
+
+          const personalize =
+            personalizationText
+              ? !/(nao|não|no|off)/.test(
+                  personalizationText
+                )
+              : state.personalize;
+
+          let type =
+            'text';
+
+          if (
+            /(voz|voice|call|audio)/.test(
+              typeText
+            )
+          ) {
+            type =
+              'voice';
+          }
+
+          if (
+            /(anuncio|anúncio|announcement)/.test(
+              typeText
+            )
+          ) {
+            type =
+              'announcement';
+          }
+
+          const config = {
+            name,
+            type,
+            category,
+            personalize,
+            private: false,
+            readonly: false,
+            denyViewRoles: [],
+            denySendRoles: []
+          };
+
+          state.editingChannel =
+            config;
+
+          saveBuilder(
+            interaction.guild.id,
+            interaction.user.id,
+            state
+          );
+
+          await interaction.reply(
+            ephemeralPayload({
+              embeds: [
+                channelConfigEmbed(
+                  config
+                )
+              ],
+              components:
+                channelConfigRows()
+            })
+          );
+
+          return;
+        }
+
+        // ------------------------------------------------------
+        // IA
+        // ------------------------------------------------------
+
+        if (
+          interaction.customId ===
+          'modal_ai'
+        ) {
+          const description =
+            interaction.fields.getTextInputValue(
+              'description'
+            );
+
+          const result =
+            interpretSingleRequest(
+              description,
+              state
+            );
+
+          saveBuilder(
+            interaction.guild.id,
+            interaction.user.id,
+            state
+          );
+
+          await interaction.reply(
+            ephemeralPayload({
+              content:
+                `${result}\n\n` +
+                '⚠️ **Importante:** a sugestão foi colocada no rascunho. Revise no painel antes de criar o servidor.'
+            })
+          );
+
+          return;
+        }
+      }
+    } catch (error) {
+      console.error(
+        '❌ Erro em interactionCreate:',
+        error
+      );
+
+      const payload =
+        ephemeralPayload({
+          content:
+            '❌ Ocorreu um erro ao processar essa ação. Veja os logs do Render para detalhes.'
+        });
+
+      try {
+        if (
+          interaction.replied ||
+          interaction.deferred
+        ) {
+          await interaction.followUp(
+            payload
+          );
+        } else {
+          await interaction.reply(
+            payload
+          );
+        }
+      } catch {}
+    }
+  }
+);
+
+// ============================================================
+// LOGIN / REGISTRO DOS COMANDOS
+// ============================================================
 
 client.once(
-  "ready",
+  'ready',
   async () => {
     console.log(
-      `✅ Bot online: ${client.user.tag}`
+      `🤖 Bot online: ${client.user.tag}`
     );
 
     try {
-      /*
-       * Remove comandos globais antigos.
-       */
+      // Remove comandos globais antigos.
       await client.application.commands.set(
         []
       );
 
-      /*
-       * Cada servidor recebe somente /painel.
-       */
+      // Deixa somente /painel em cada servidor.
       for (
         const guild of client.guilds.cache.values()
       ) {
-        try {
-          await guild.commands.set([
-            painelCommand.toJSON()
-          ]);
+        await guild.commands.set([
+          painelCommand.toJSON()
+        ]);
 
-          console.log(
-            `✅ /painel registrado em ${guild.name}`
-          );
-        } catch (error) {
-          console.error(
-            `❌ Erro em ${guild.name}: ${error.message}`
-          );
-        }
+        console.log(
+          `✅ /painel registrado em: ${guild.name}`
+        );
       }
 
       console.log(
-        "✅ Comandos antigos removidos."
+        '🧹 Comandos antigos removidos.'
       );
     } catch (error) {
       console.error(
-        "❌ Erro registrando comandos:",
+        '❌ Erro registrando /painel:',
         error
       );
     }
   }
 );
 
-/* =========================================================
-   NOVO SERVIDOR
-========================================================= */
-
 client.on(
-  "guildCreate",
+  'guildCreate',
   async guild => {
     try {
       await guild.commands.set([
@@ -2128,431 +3036,48 @@ client.on(
       );
     } catch (error) {
       console.error(
-        `❌ Erro no novo servidor ${guild.name}: ${error.message}`
-      );
-    }
-  }
-);
-
-/* =========================================================
-   INTERAÇÕES
-========================================================= */
-
-client.on(
-  "interactionCreate",
-  async interaction => {
-    try {
-      /* ==============================================
-         SLASH COMMAND
-      ============================================== */
-
-      if (
-        interaction.isChatInputCommand()
-      ) {
-        if (
-          interaction.commandName !==
-          "painel"
-        ) {
-          return;
-        }
-
-        if (
-          !isAdmin(interaction)
-        ) {
-          return privateReply(
-            interaction,
-            {
-              content:
-                "❌ Apenas administradores podem usar o painel."
-            }
-          );
-        }
-
-        return privateReply(
-          interaction,
-          buildPanel()
-        );
-      }
-
-      /* ==============================================
-         BOTÕES
-      ============================================== */
-
-      if (
-        interaction.isButton()
-      ) {
-        if (
-          !isAdmin(interaction)
-        ) {
-          return privateReply(
-            interaction,
-            {
-              content:
-                "❌ Apenas administradores podem usar o painel."
-            }
-          );
-        }
-
-        if (
-          interaction.customId ===
-          "create"
-        ) {
-          return interaction.showModal(
-            buildModal()
-          );
-        }
-
-        if (
-          interaction.customId ===
-          "levels"
-        ) {
-          return privateReply(
-            interaction,
-            {
-              content:
-                "🎚️ **NÍVEIS DE PERMISSÃO**\n\n" +
-                "**Nível 1 — Membro:** participação normal.\n" +
-                "**Nível 2 — Ajudante:** ajuda + algumas funções.\n" +
-                "**Nível 3 — Moderador:** funções de moderação.\n" +
-                "**Nível 4 — Administrador:** administração sem Administrator.\n" +
-                "**Nível 5 — Dono:** Administrator.\n\n" +
-                "💡 Também pode escrever:\n" +
-                "`todas as permissões menos banir`"
-            }
-          );
-        }
-
-        if (
-          interaction.customId ===
-          "tutorial"
-        ) {
-          return privateReply(
-            interaction,
-            {
-              content:
-                "📖 **TUTORIAL**\n\n" +
-                "**1.** Clique em 🚀 Criar Servidor.\n" +
-                "**2.** Descreva o servidor normalmente.\n" +
-                "**3.** Use níveis de 1 a 5 nos cargos.\n" +
-                "**4.** Diga quais categorias são públicas ou privadas.\n" +
-                "**5.** Diga quais canais são públicos, privados ou somente leitura.\n" +
-                "**6.** Confira a prévia.\n" +
-                "**7.** Clique em Criar agora.\n\n" +
-                "✅ Você não precisa escrever JSON."
-            }
-          );
-        }
-
-        if (
-          interaction.customId ===
-          "model"
-        ) {
-          return privateReply(
-            interaction,
-            {
-              content:
-                "📋 **MODELO**\n\n" +
-                "Quero um servidor de comunidade de futebol.\n\n" +
-                "CARGOS:\n" +
-                "Dono nível 5\n" +
-                "Administrador nível 4\n" +
-                "Moderador nível 3\n" +
-                "Membro nível 1\n\n" +
-                "CATEGORIAS:\n" +
-                "Comunidade pública\n" +
-                "Futebol pública\n" +
-                "Admin privada\n\n" +
-                "CANAIS:\n" +
-                "#regras somente leitura\n" +
-                "#chat-geral público\n" +
-                "#noticias público\n" +
-                "#logs somente admins"
-            }
-          );
-        }
-
-        if (
-          interaction.customId ===
-          "admin"
-        ) {
-          const me =
-            interaction.guild
-              .members.me;
-
-          return privateReply(
-            interaction,
-            {
-              content:
-                "⚙️ **ADMINISTRAÇÃO**\n\n" +
-                `Gerenciar Cargos: ${
-                  me?.permissions.has(
-                    P.ManageRoles
-                  )
-                    ? "✅"
-                    : "❌"
-                }\n` +
-                `Gerenciar Canais: ${
-                  me?.permissions.has(
-                    P.ManageChannels
-                  )
-                    ? "✅"
-                    : "❌"
-                }\n\n` +
-                "⚠️ O bot não consegue editar cargos que estejam acima dele na hierarquia do Discord."
-            }
-          );
-        }
-
-        if (
-          interaction.customId ===
-          "status"
-        ) {
-          const s =
-            getStatus(
-              interaction.guild
-            );
-
-          return privateReply(
-            interaction,
-            {
-              content:
-                "📊 **STATUS DO SERVIDOR**\n\n" +
-                `👥 Membros: **${s.members}**\n` +
-                `🎭 Cargos personalizados: **${s.roles}**\n` +
-                `📁 Categorias: **${s.categories}**\n` +
-                `💬 Canais: **${s.channels}**`
-            }
-          );
-        }
-
-        if (
-          interaction.customId ===
-          "confirm"
-        ) {
-          const key =
-            `${interaction.guild.id}:${interaction.user.id}`;
-
-          const item =
-            pending.get(key);
-
-          if (
-            !item ||
-            item.expires <
-              Date.now()
-          ) {
-            pending.delete(
-              key
-            );
-
-            return privateReply(
-              interaction,
-              {
-                content:
-                  "⌛ A prévia expirou. Clique em Criar Servidor novamente."
-              }
-            );
-          }
-
-          await interaction.deferReply(
-            {
-              flags:
-                MessageFlags.Ephemeral
-            }
-          );
-
-          const result =
-            await applyTemplate(
-              interaction.guild,
-              item.template
-            );
-
-          pending.delete(
-            key
-          );
-
-          const s =
-            getStatus(
-              interaction.guild
-            );
-
-          return interaction.editReply(
-            {
-              content:
-                "✅ **CONFIGURAÇÃO CONCLUÍDA!**\n\n" +
-                `🎭 Cargos processados: **${result.roles}**\n` +
-                `📁 Categorias processadas: **${result.categories}**\n` +
-                `💬 Canais processados: **${result.channels}**\n\n` +
-                "📊 **STATUS ATUAL**\n" +
-                `👥 Membros: **${s.members}**\n` +
-                `🎭 Cargos personalizados: **${s.roles}**\n` +
-                `📁 Categorias: **${s.categories}**\n` +
-                `💬 Canais: **${s.channels}**`
-            }
-          );
-        }
-
-        if (
-          interaction.customId ===
-          "cancel"
-        ) {
-          const key =
-            `${interaction.guild.id}:${interaction.user.id}`;
-
-          pending.delete(
-            key
-          );
-
-          return privateReply(
-            interaction,
-            {
-              content:
-                "❌ Criação cancelada."
-            }
-          );
-        }
-
-        return;
-      }
-
-      /* ==============================================
-         MODAL
-      ============================================== */
-
-      if (
-        interaction.isModalSubmit() &&
-        interaction.customId ===
-          "create_modal"
-      ) {
-        if (
-          !isAdmin(interaction)
-        ) {
-          return privateReply(
-            interaction,
-            {
-              content:
-                "❌ Apenas administradores podem usar o sistema."
-            }
-          );
-        }
-
-        const description =
-          interaction.fields.getTextInputValue(
-            "description"
-          );
-
-        const template =
-          interpret(
-            description
-          );
-
-        validateTemplate(
-          template
-        );
-
-        const key =
-          `${interaction.guild.id}:${interaction.user.id}`;
-
-        pending.set(
-          key,
-          {
-            template,
-            expires:
-              Date.now() +
-              PREVIEW_TTL
-          }
-        );
-
-        const row =
-          new ActionRowBuilder()
-            .addComponents(
-              new ButtonBuilder()
-                .setCustomId(
-                  "confirm"
-                )
-                .setLabel(
-                  "Criar agora"
-                )
-                .setEmoji("✅")
-                .setStyle(
-                  ButtonStyle.Success
-                ),
-
-              new ButtonBuilder()
-                .setCustomId(
-                  "cancel"
-                )
-                .setLabel(
-                  "Cancelar"
-                )
-                .setEmoji("❌")
-                .setStyle(
-                  ButtonStyle.Danger
-                )
-            );
-
-        return privateReply(
-          interaction,
-          {
-            embeds: [
-              buildPreview(
-                template
-              )
-            ],
-            components: [
-              row
-            ]
-          }
-        );
-      }
-    } catch (error) {
-      console.error(
-        "❌ Erro na interação:",
+        `❌ Erro registrando /painel em ${guild.name}:`,
         error
       );
-
-      try {
-        if (
-          interaction.deferred
-        ) {
-          await interaction.editReply(
-            {
-              content:
-                `❌ ${
-                  error.message ||
-                  "Erro desconhecido."
-                }`
-            }
-          );
-        } else if (
-          !interaction.replied
-        ) {
-          await privateReply(
-            interaction,
-            {
-              content:
-                `❌ ${
-                  error.message ||
-                  "Erro desconhecido."
-                }`
-            }
-          );
-        }
-      } catch {}
     }
   }
 );
 
-/* =========================================================
-   LOGIN
-========================================================= */
+// ============================================================
+// ERROS GLOBAIS
+// ============================================================
 
-client
-  .login(TOKEN)
-  .catch(error => {
+process.on(
+  'unhandledRejection',
+  error =>
     console.error(
-      "❌ Falha ao conectar o bot:",
+      '❌ Unhandled rejection:',
+      error
+    )
+);
+
+process.on(
+  'uncaughtException',
+  error =>
+    console.error(
+      '❌ Uncaught exception:',
+      error
+    )
+);
+
+// ============================================================
+// LOGIN
+// ============================================================
+
+client.login(
+  TOKEN
+).catch(
+  error => {
+    console.error(
+      '❌ Falha ao conectar no Discord:',
       error
     );
 
     process.exit(1);
-  });
+  }
+);
